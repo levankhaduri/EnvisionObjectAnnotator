@@ -1,0 +1,824 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>EnvisionObjectAnnotator - Annotation</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css">
+    <style>
+        body {
+            font-family: 'Inter', sans-serif;
+        }
+        .control-panel {
+            background: white;
+            border: 2px solid #e5e7eb;
+            border-radius: 12px;
+            padding: 24px;
+            transition: all 0.3s ease;
+        }
+        .control-panel:hover {
+            border-color: #d1d5db;
+        }
+        .btn-primary {
+            background: black;
+            color: white;
+            padding: 12px 24px;
+            border-radius: 8px;
+            font-weight: 600;
+            transition: all 0.3s ease;
+            border: none;
+            cursor: pointer;
+        }
+        .btn-primary:hover:not(:disabled) {
+            background: #374151;
+            transform: translateY(-2px);
+            box-shadow: 0 4px 12px rgba(0,0,0,0.2);
+        }
+        .btn-primary:disabled {
+            background: #d1d5db;
+            cursor: not-allowed;
+            transform: none;
+        }
+        .btn-secondary {
+            background: white;
+            color: black;
+            border: 2px solid black;
+            padding: 12px 24px;
+            border-radius: 8px;
+            font-weight: 600;
+            transition: all 0.3s ease;
+            cursor: pointer;
+        }
+        .btn-secondary:hover:not(:disabled) {
+            background: black;
+            color: white;
+        }
+        .canvas-container {
+            border: 2px solid #e5e7eb;
+            border-radius: 12px;
+            overflow: hidden;
+            position: relative;
+            background: #000;
+            cursor: crosshair;
+        }
+        canvas {
+            display: block;
+            width: 100%;
+            height: auto;
+        }
+        .progress-steps {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 8px;
+            margin-bottom: 32px;
+        }
+        .step {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+        .step-circle {
+            width: 32px;
+            height: 32px;
+            border-radius: 50%;
+            border: 2px solid #e5e7eb;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-weight: 600;
+            font-size: 14px;
+        }
+        .step-circle.active {
+            background: black;
+            color: white;
+            border-color: black;
+        }
+        .step-circle.completed {
+            background: #d1d5db;
+            color: white;
+            border-color: #d1d5db;
+        }
+        .step-line {
+            width: 40px;
+            height: 2px;
+            background: #e5e7eb;
+        }
+        .object-card {
+            background: white;
+            border: 2px solid #e5e7eb;
+            border-radius: 8px;
+            padding: 12px;
+            transition: all 0.3s ease;
+        }
+        .object-card.active {
+            border-color: black;
+            background: #f9fafb;
+        }
+        .object-card:hover {
+            border-color: #d1d5db;
+        }
+        .point-marker {
+            position: absolute;
+            width: 12px;
+            height: 12px;
+            border-radius: 50%;
+            border: 2px solid white;
+            transform: translate(-50%, -50%);
+            pointer-events: none;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.3);
+        }
+        .point-marker.positive {
+            background: #22c55e;
+        }
+        .point-marker.negative {
+            background: #ef4444;
+        }
+        .keyboard-hint {
+            background: #f3f4f6;
+            border: 2px solid #e5e7eb;
+            border-radius: 8px;
+            padding: 8px 12px;
+            font-size: 13px;
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+        }
+        .key {
+            background: white;
+            border: 2px solid #d1d5db;
+            border-radius: 4px;
+            padding: 2px 8px;
+            font-weight: 600;
+            font-size: 12px;
+        }
+        input[type="text"] {
+            border: 2px solid #e5e7eb;
+            border-radius: 8px;
+            padding: 10px 16px;
+            width: 100%;
+            transition: all 0.3s ease;
+        }
+        input[type="text"]:focus {
+            outline: none;
+            border-color: black;
+        }
+        .notification {
+            position: fixed;
+            top: 80px;
+            right: 24px;
+            background: white;
+            border: 2px solid black;
+            border-radius: 8px;
+            padding: 16px 24px;
+            box-shadow: 0 4px 12px rgba(0,0,0,0.2);
+            z-index: 1000;
+            animation: slideIn 0.3s ease;
+        }
+        @keyframes slideIn {
+            from {
+                transform: translateX(400px);
+                opacity: 0;
+            }
+            to {
+                transform: translateX(0);
+                opacity: 1;
+            }
+        }
+        input[type="range"] {
+            -webkit-appearance: none;
+            appearance: none;
+            width: 100%;
+            height: 8px;
+            border-radius: 4px;
+            background: #e5e7eb;
+            outline: none;
+        }
+        input[type="range"]::-webkit-slider-thumb {
+            -webkit-appearance: none;
+            appearance: none;
+            width: 20px;
+            height: 20px;
+            border-radius: 50%;
+            background: black;
+            cursor: pointer;
+        }
+        input[type="range"]::-moz-range-thumb {
+            width: 20px;
+            height: 20px;
+            border-radius: 50%;
+            background: black;
+            cursor: pointer;
+            border: none;
+        }
+    </style>
+</head>
+<body class="bg-white text-black">
+    <!-- Header -->
+    <header class="bg-white border-b-2 border-black fixed w-full z-50">
+        <nav class="container mx-auto px-6 py-4 flex justify-between items-center">
+            <div class="text-xl font-semibold flex items-center">
+                <i class="fas fa-eye mr-3"></i>
+                EnvisionObjectAnnotator
+            </div>
+            <div class="flex space-x-4">
+                <button class="btn-secondary" onclick="window.location.href='configuration.html'" aria-label="Go back">
+                    <i class="fas fa-arrow-left mr-2"></i>Back
+                </button>
+                <button class="btn-primary" onclick="finishAnnotation()" id="finishBtn" disabled aria-label="Finish annotation">
+                    Start Processing<i class="fas fa-arrow-right ml-2"></i>
+                </button>
+            </div>
+        </nav>
+    </header>
+
+    <main class="pt-24 pb-16">
+        <div class="container mx-auto px-6">
+            <!-- Progress Steps -->
+            <div class="progress-steps">
+                <div class="step">
+                    <div class="step-circle completed">1</div>
+                    <span class="text-sm font-medium text-gray-600">Setup</span>
+                </div>
+                <div class="step-line"></div>
+                <div class="step">
+                    <div class="step-circle completed">2</div>
+                    <span class="text-sm font-medium text-gray-600">Configuration</span>
+                </div>
+                <div class="step-line"></div>
+                <div class="step">
+                    <div class="step-circle active">3</div>
+                    <span class="text-sm font-medium">Annotation</span>
+                </div>
+                <div class="step-line"></div>
+                <div class="step">
+                    <div class="step-circle">4</div>
+                    <span class="text-sm font-medium text-gray-400">Processing</span>
+                </div>
+                <div class="step-line"></div>
+                <div class="step">
+                    <div class="step-circle">5</div>
+                    <span class="text-sm font-medium text-gray-400">Results</span>
+                </div>
+            </div>
+
+            <div class="grid grid-cols-12 gap-6">
+                <!-- Left Sidebar -->
+                <div class="col-span-3">
+                    <!-- Controls Guide -->
+                    <div class="mb-6">
+                        <h2 class="text-sm font-semibold mb-3 text-gray-600 uppercase tracking-wide">Controls</h2>
+                        <div class="control-panel">
+                            <div class="space-y-3 text-sm">
+                                <div>
+                                    <div class="font-semibold mb-2">Mouse Controls</div>
+                                    <div class="space-y-2">
+                                        <div class="flex items-center gap-2">
+                                            <i class="fas fa-mouse-pointer w-4"></i>
+                                            <span class="text-gray-600">Left Click:</span>
+                                            <span class="text-xs">Add positive point</span>
+                                        </div>
+                                        <div class="flex items-center gap-2">
+                                            <i class="fas fa-mouse-pointer w-4"></i>
+                                            <span class="text-gray-600">Right Click:</span>
+                                            <span class="text-xs">Add negative point</span>
+                                        </div>
+                                    </div>
+                                </div>
+                                <hr class="border-gray-200">
+                                <div>
+                                    <div class="font-semibold mb-2">Keyboard Shortcuts</div>
+                                    <div class="space-y-2">
+                                        <div class="flex items-center gap-2">
+                                            <span class="key">T</span>
+                                            <span class="text-xs">Preview mask</span>
+                                        </div>
+                                        <div class="flex items-center gap-2">
+                                            <span class="key">C</span>
+                                            <span class="text-xs">Name object</span>
+                                        </div>
+                                        <div class="flex items-center gap-2">
+                                            <span class="key">N</span>
+                                            <span class="text-xs">Next object</span>
+                                        </div>
+                                        <div class="flex items-center gap-2">
+                                            <span class="key">P</span>
+                                            <span class="text-xs">Previous object</span>
+                                        </div>
+                                        <div class="flex items-center gap-2">
+                                            <span class="key">R</span>
+                                            <span class="text-xs">Reset object</span>
+                                        </div>
+                                        <div class="flex items-center gap-2">
+                                            <span class="key">Enter</span>
+                                            <span class="text-xs">Finish annotation</span>
+                                        </div>
+                                        <div class="flex items-center gap-2">
+                                            <span class="key">Q</span>
+                                            <span class="text-xs">Quit</span>
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Tips -->
+                    <div class="mb-6">
+                        <h2 class="text-sm font-semibold mb-3 text-gray-600 uppercase tracking-wide">Tips</h2>
+                        <div class="control-panel">
+                            <ul class="space-y-3 text-sm text-gray-700">
+                                <li class="flex items-start gap-2">
+                                    <i class="fas fa-lightbulb text-black mt-1"></i>
+                                    <span>Use 3-6 positive points per object</span>
+                                </li>
+                                <li class="flex items-start gap-2">
+                                    <i class="fas fa-lightbulb text-black mt-1"></i>
+                                    <span>Add negative points at boundaries</span>
+                                </li>
+                                <li class="flex items-start gap-2">
+                                    <i class="fas fa-lightbulb text-black mt-1"></i>
+                                    <span>Name targets with "target" in the name</span>
+                                </li>
+                                <li class="flex items-start gap-2">
+                                    <i class="fas fa-lightbulb text-black mt-1"></i>
+                                    <span>Press T to preview before moving on</span>
+                                </li>
+                            </ul>
+                        </div>
+                    </div>
+
+                    <!-- Current Object Info -->
+                    <div>
+                        <h2 class="text-sm font-semibold mb-3 text-gray-600 uppercase tracking-wide">Current Object</h2>
+                        <div class="control-panel">
+                            <div class="mb-3">
+                                <label class="text-sm font-semibold mb-2 block">Object Name</label>
+                                <input type="text" id="objectName" placeholder="Enter name (e.g., ball, target_marker)" aria-label="Object name">
+                            </div>
+                            <div class="grid grid-cols-2 gap-3 text-center text-sm">
+                                <div class="bg-gray-50 border-2 border-gray-200 rounded-lg p-2">
+                                    <div class="text-xs text-gray-600 mb-1">Positive Points</div>
+                                    <div class="text-2xl font-bold text-green-600" id="positiveCount">0</div>
+                                </div>
+                                <div class="bg-gray-50 border-2 border-gray-200 rounded-lg p-2">
+                                    <div class="text-xs text-gray-600 mb-1">Negative Points</div>
+                                    <div class="text-2xl font-bold text-red-600" id="negativeCount">0</div>
+                                </div>
+                            </div>
+                            <div class="mt-3 space-y-2">
+                                <button class="btn-secondary w-full text-sm" onclick="previewMask()">
+                                    <i class="fas fa-eye mr-2"></i>Preview Mask (T)
+                                </button>
+                                <button class="btn-secondary w-full text-sm" onclick="resetCurrentObject()">
+                                    <i class="fas fa-redo mr-2"></i>Reset Object (R)
+                                </button>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Main Content -->
+                <div class="col-span-6">
+                    <!-- Reference Frame Selection -->
+                    <div class="mb-6" id="frameSelectionPanel">
+                        <h2 class="text-sm font-semibold mb-3 text-gray-600 uppercase tracking-wide">Step 1: Select Reference Frame</h2>
+                        <div class="control-panel">
+                            <p class="text-sm text-gray-600 mb-4">Choose a frame where all objects are clearly visible. Ideally, select frame 0 or an early frame.</p>
+                            <div class="flex items-center gap-4 mb-3">
+                                <label class="text-sm font-semibold">Frame Number:</label>
+                                <input type="range" min="0" max="300" value="0" id="frameSlider" class="flex-1" aria-label="Frame selection slider">
+                                <input type="number" min="0" max="300" value="0" id="frameNumber" class="w-20 border-2 border-gray-300 rounded px-2 py-1 text-center" aria-label="Frame number input">
+                            </div>
+                            <button class="btn-primary w-full" onclick="confirmFrame()">
+                                <i class="fas fa-check mr-2"></i>Confirm Frame & Start Annotation
+                            </button>
+                        </div>
+                    </div>
+
+                    <!-- Annotation Canvas -->
+                    <div class="mb-6" id="annotationPanel" style="display: none;">
+                        <h2 class="text-sm font-semibold mb-3 text-gray-600 uppercase tracking-wide">Step 2: Annotate Objects</h2>
+                        <div class="canvas-container" id="canvasContainer">
+                            <canvas id="annotationCanvas"></canvas>
+                        </div>
+                        <div class="control-panel mt-4">
+                            <div class="flex justify-between items-center">
+                                <span class="text-sm text-gray-600">Reference Frame: <strong id="selectedFrame">0</strong></span>
+                                <div class="flex gap-2">
+                                    <button class="btn-secondary text-sm" onclick="previousObject()">
+                                        <i class="fas fa-arrow-left mr-2"></i>Previous (P)
+                                    </button>
+                                    <button class="btn-primary text-sm" onclick="nextObject()">
+                                        Next Object (N)<i class="fas fa-arrow-right ml-2"></i>
+                                    </button>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Right Sidebar -->
+                <div class="col-span-3">
+                    <!-- Objects List -->
+                    <div>
+                        <h2 class="text-sm font-semibold mb-3 text-gray-600 uppercase tracking-wide">Annotated Objects</h2>
+                        <div id="objectsList" class="space-y-2">
+                            <div class="text-sm text-gray-500 text-center py-8 border-2 border-dashed border-gray-300 rounded-lg">
+                                No objects yet. Start annotating!
+                            </div>
+                        </div>
+                        <div class="mt-4 control-panel bg-gray-50">
+                            <div class="text-center">
+                                <div class="text-3xl font-bold mb-1" id="objectCount">0</div>
+                                <div class="text-sm text-gray-600">Total Objects</div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </main>
+
+    <script>
+        let canvas, ctx;
+        let referenceFrame = 0;
+        let currentObject = 0;
+        let objects = [];
+        let isAnnotating = false;
+
+        // Initialize
+        document.addEventListener('DOMContentLoaded', () => {
+            setupCanvas();
+            setupKeyboardControls();
+            
+            // Sync frame slider and input
+            const slider = document.getElementById('frameSlider');
+            const input = document.getElementById('frameNumber');
+            
+            slider.addEventListener('input', (e) => {
+                input.value = e.target.value;
+                updateFramePreview(e.target.value);
+            });
+            
+            input.addEventListener('input', (e) => {
+                slider.value = e.target.value;
+                updateFramePreview(e.target.value);
+            });
+
+            // Start with first object
+            objects.push({
+                id: 0,
+                name: '',
+                points: { positive: [], negative: [] },
+                isTarget: false
+            });
+        });
+
+        function setupCanvas() {
+            canvas = document.getElementById('annotationCanvas');
+            ctx = canvas.getContext('2d');
+            
+            // Set canvas size (demo: 800x450)
+            canvas.width = 800;
+            canvas.height = 450;
+            
+            // Draw placeholder
+            drawPlaceholder();
+            
+            // Mouse events
+            canvas.addEventListener('click', handleCanvasClick);
+            canvas.addEventListener('contextmenu', handleCanvasRightClick);
+        }
+
+        function drawPlaceholder() {
+            ctx.fillStyle = '#1f2937';
+            ctx.fillRect(0, 0, canvas.width, canvas.height);
+            ctx.fillStyle = '#9ca3af';
+            ctx.font = '20px Inter';
+            ctx.textAlign = 'center';
+            ctx.fillText('Reference Frame Will Appear Here', canvas.width/2, canvas.height/2);
+        }
+
+        function updateFramePreview(frameNum) {
+            // In real app, this would load the actual frame
+            ctx.fillStyle = '#1f2937';
+            ctx.fillRect(0, 0, canvas.width, canvas.height);
+            ctx.fillStyle = '#9ca3af';
+            ctx.font = '24px Inter';
+            ctx.textAlign = 'center';
+            ctx.fillText(`Frame ${frameNum}`, canvas.width/2, canvas.height/2);
+        }
+
+        function confirmFrame() {
+            referenceFrame = document.getElementById('frameNumber').value;
+            document.getElementById('selectedFrame').textContent = referenceFrame;
+            document.getElementById('frameSelectionPanel').style.display = 'none';
+            document.getElementById('annotationPanel').style.display = 'block';
+            isAnnotating = true;
+            
+            // Load reference frame
+            loadReferenceFrame(referenceFrame);
+            
+            showNotification(`Reference frame ${referenceFrame} selected. Start annotating!`, 'success');
+        }
+
+        function loadReferenceFrame(frameNum) {
+            // Simulate loading a frame with some visual content
+            ctx.fillStyle = '#374151';
+            ctx.fillRect(0, 0, canvas.width, canvas.height);
+            
+            // Draw some example objects (circles representing objects)
+            ctx.fillStyle = '#60a5fa';
+            ctx.beginPath();
+            ctx.arc(200, 200, 50, 0, Math.PI * 2);
+            ctx.fill();
+            
+            ctx.fillStyle = '#f59e0b';
+            ctx.beginPath();
+            ctx.arc(500, 250, 60, 0, Math.PI * 2);
+            ctx.fill();
+            
+            ctx.fillStyle = '#10b981';
+            ctx.beginPath();
+            ctx.arc(350, 350, 40, 0, Math.PI * 2);
+            ctx.fill();
+            
+            // Draw crosshair (target)
+            ctx.strokeStyle = '#ef4444';
+            ctx.lineWidth = 3;
+            ctx.beginPath();
+            ctx.moveTo(600, 150);
+            ctx.lineTo(620, 150);
+            ctx.moveTo(610, 140);
+            ctx.lineTo(610, 160);
+            ctx.stroke();
+            
+            ctx.fillStyle = '#ffffff';
+            ctx.font = '14px Inter';
+            ctx.textAlign = 'left';
+            ctx.fillText('Example objects for annotation', 20, 30);
+        }
+
+        function handleCanvasClick(e) {
+            if (!isAnnotating) return;
+            
+            const rect = canvas.getBoundingClientRect();
+            const x = e.clientX - rect.left;
+            const y = e.clientY - rect.top;
+            
+            // Scale to canvas coordinates
+            const scaleX = canvas.width / rect.width;
+            const scaleY = canvas.height / rect.height;
+            const canvasX = x * scaleX;
+            const canvasY = y * scaleY;
+            
+            objects[currentObject].points.positive.push({ x: canvasX, y: canvasY });
+            
+            drawPoint(canvasX, canvasY, 'positive');
+            updatePointCounts();
+        }
+
+        function handleCanvasRightClick(e) {
+            e.preventDefault();
+            if (!isAnnotating) return;
+            
+            const rect = canvas.getBoundingClientRect();
+            const x = e.clientX - rect.left;
+            const y = e.clientY - rect.top;
+            
+            const scaleX = canvas.width / rect.width;
+            const scaleY = canvas.height / rect.height;
+            const canvasX = x * scaleX;
+            const canvasY = y * scaleY;
+            
+            objects[currentObject].points.negative.push({ x: canvasX, y: canvasY });
+            
+            drawPoint(canvasX, canvasY, 'negative');
+            updatePointCounts();
+        }
+
+        function drawPoint(x, y, type) {
+            ctx.fillStyle = type === 'positive' ? '#22c55e' : '#ef4444';
+            ctx.strokeStyle = '#ffffff';
+            ctx.lineWidth = 2;
+            ctx.beginPath();
+            ctx.arc(x, y, 6, 0, Math.PI * 2);
+            ctx.fill();
+            ctx.stroke();
+        }
+
+        function redrawCanvas() {
+            loadReferenceFrame(referenceFrame);
+            const obj = objects[currentObject];
+            obj.points.positive.forEach(p => drawPoint(p.x, p.y, 'positive'));
+            obj.points.negative.forEach(p => drawPoint(p.x, p.y, 'negative'));
+        }
+
+        function updatePointCounts() {
+            const obj = objects[currentObject];
+            document.getElementById('positiveCount').textContent = obj.points.positive.length;
+            document.getElementById('negativeCount').textContent = obj.points.negative.length;
+        }
+
+        function previewMask() {
+            const obj = objects[currentObject];
+            if (obj.points.positive.length === 0) {
+                showNotification('Add at least one positive point first', 'error');
+                return;
+            }
+            
+            // Simulate mask preview
+            showNotification('Mask preview: Object boundary detected', 'success');
+            
+            // Draw simulated mask overlay
+            ctx.fillStyle = 'rgba(34, 197, 94, 0.3)';
+            ctx.strokeStyle = '#22c55e';
+            ctx.lineWidth = 3;
+            
+            // Create a rough shape around points
+            if (obj.points.positive.length > 0) {
+                const avgX = obj.points.positive.reduce((sum, p) => sum + p.x, 0) / obj.points.positive.length;
+                const avgY = obj.points.positive.reduce((sum, p) => sum + p.y, 0) / obj.points.positive.length;
+                
+                ctx.beginPath();
+                ctx.arc(avgX, avgY, 70, 0, Math.PI * 2);
+                ctx.fill();
+                ctx.stroke();
+                
+                setTimeout(() => redrawCanvas(), 2000);
+            }
+        }
+
+        function resetCurrentObject() {
+            objects[currentObject].points = { positive: [], negative: [] };
+            redrawCanvas();
+            updatePointCounts();
+            showNotification('Object points reset', 'info');
+        }
+
+        function nextObject() {
+            const currentName = document.getElementById('objectName').value.trim();
+            if (currentName === '') {
+                showNotification('Please name the current object first (press C)', 'error');
+                return;
+            }
+            
+            if (objects[currentObject].points.positive.length === 0) {
+                showNotification('Add at least one positive point before moving on', 'error');
+                return;
+            }
+            
+            objects[currentObject].name = currentName;
+            objects[currentObject].isTarget = currentName.toLowerCase().includes('target');
+            
+            currentObject++;
+            objects.push({
+                id: currentObject,
+                name: '',
+                points: { positive: [], negative: [] },
+                isTarget: false
+            });
+            
+            document.getElementById('objectName').value = '';
+            redrawCanvas();
+            updatePointCounts();
+            updateObjectsList();
+            showNotification(`Moving to object ${currentObject + 1}`, 'success');
+        }
+
+        function previousObject() {
+            if (currentObject > 0) {
+                currentObject--;
+                document.getElementById('objectName').value = objects[currentObject].name;
+                redrawCanvas();
+                updatePointCounts();
+                showNotification(`Switched to object ${currentObject + 1}`, 'info');
+            }
+        }
+
+        function updateObjectsList() {
+            const list = document.getElementById('objectsList');
+            const completed = objects.filter(o => o.name !== '');
+            
+            if (completed.length === 0) {
+                list.innerHTML = '<div class="text-sm text-gray-500 text-center py-8 border-2 border-dashed border-gray-300 rounded-lg">No objects yet. Start annotating!</div>';
+                document.getElementById('finishBtn').disabled = true;
+            } else {
+                list.innerHTML = completed.map((obj, idx) => `
+                    <div class="object-card ${idx === currentObject ? 'active' : ''}" onclick="switchToObject(${idx})">
+                        <div class="flex items-center gap-3">
+                            <div class="w-8 h-8 rounded-full bg-gray-900 text-white flex items-center justify-center text-sm font-bold">
+                                ${idx + 1}
+                            </div>
+                            <div class="flex-1">
+                                <div class="font-semibold text-sm">${obj.name}</div>
+                                <div class="text-xs text-gray-600">
+                                    <span class="text-green-600">${obj.points.positive.length} +</span> / 
+                                    <span class="text-red-600">${obj.points.negative.length} -</span>
+                                    ${obj.isTarget ? ' • <strong>TARGET</strong>' : ''}
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                `).join('');
+                document.getElementById('finishBtn').disabled = false;
+            }
+            
+            document.getElementById('objectCount').textContent = completed.length;
+        }
+
+        function switchToObject(idx) {
+            currentObject = idx;
+            document.getElementById('objectName').value = objects[currentObject].name;
+            redrawCanvas();
+            updatePointCounts();
+        }
+
+        function setupKeyboardControls() {
+            document.addEventListener('keydown', (e) => {
+                if (e.target.tagName === 'INPUT') return;
+                
+                switch(e.key.toLowerCase()) {
+                    case 't':
+                        e.preventDefault();
+                        previewMask();
+                        break;
+                    case 'c':
+                        e.preventDefault();
+                        document.getElementById('objectName').focus();
+                        break;
+                    case 'n':
+                        e.preventDefault();
+                        nextObject();
+                        break;
+                    case 'p':
+                        e.preventDefault();
+                        previousObject();
+                        break;
+                    case 'r':
+                        e.preventDefault();
+                        resetCurrentObject();
+                        break;
+                    case 'enter':
+                        e.preventDefault();
+                        finishAnnotation();
+                        break;
+                    case 'q':
+                        e.preventDefault();
+                        if (confirm('Quit annotation? Progress will be lost.')) {
+                            window.location.href = 'configuration.html';
+                        }
+                        break;
+                }
+            });
+        }
+
+        function finishAnnotation() {
+            const completed = objects.filter(o => o.name !== '');
+            if (completed.length === 0) {
+                showNotification('Please annotate at least one object', 'error');
+                return;
+            }
+            
+            const targets = completed.filter(o => o.isTarget);
+            if (targets.length === 0) {
+                if (!confirm('No targets detected. Continue without target-object overlap detection?')) {
+                    return;
+                }
+            }
+            
+            showNotification(`Annotation complete! ${completed.length} objects annotated.`, 'success');
+            console.log('Annotated objects:', completed);
+            
+            setTimeout(() => {
+                window.location.href = 'processing.html';
+            }, 1500);
+        }
+
+        function showNotification(message, type = 'info') {
+            const notification = document.createElement('div');
+            notification.className = 'notification';
+            
+            const icon = type === 'success' ? 'check-circle' : 
+                        type === 'error' ? 'exclamation-circle' : 'info-circle';
+            
+            notification.innerHTML = `
+                <div class="flex items-center gap-3">
+                    <i class="fas fa-${icon} text-xl"></i>
+                    <span class="font-semibold">${message}</span>
+                </div>
+            `;
+            
+            document.body.appendChild(notification);
+            
+            setTimeout(() => {
+                notification.style.animation = 'slideIn 0.3s ease reverse';
+                setTimeout(() => notification.remove(), 300);
+            }, 3000);
+        }
+    </script>
+</body>
+</html>

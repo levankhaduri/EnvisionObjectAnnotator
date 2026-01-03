@@ -1,2 +1,9 @@
 extra/
 *.pt
+.DS_Store
+sam2/
+backend/.venv/
+frontend/node_modules/
+backend/data/
+__pycache__/
+*.pyc

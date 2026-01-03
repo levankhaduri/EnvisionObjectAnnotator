@@ -20,7 +20,7 @@
   <img src="extra/Video_Process.gif">
 </p>
 
-This repository provides a user-friendly Python application built on [Meta AI’s SAM2](https://github.com/facebookresearch/sam2) model for **object tracking and overlap (“looking at”) detection** in videos.  
+This repository provides a user-friendly application built on [Meta AI’s SAM2](https://github.com/facebookresearch/sam2) model for **object tracking and overlap (“looking at”) detection** in videos.  
 
 The tool was developed as part of the **EnvisionBOXBABY project**, with a focus on analyzing infant–adult interactions using videos recorded from an infant’s head-mounted camera. However, it can be used for **any scenario** where you want to annotate objects and detect when one *target* object overlaps with others.
 
@@ -49,11 +49,54 @@ Or use git:
 git clone https://github.com/DavAhm/EnvisionObjectAnnotator.git
 cd EnvisionObjectAnnotator
 ```
-2. ### Install Sam2 
-Follow the installation guide for SAM2: [SAM 2 Installation Instructions →](docs/installation_SAM2.md)
 
-3. ### Install the supporting Tools and Packages 
-Follow the installation guide for Tools and Packages: [Tools and Packages Installation Instructions →](docs/installation_tools_packages.md)
+### 2. Install prerequisites (all platforms)
+- **Python 3.10+**
+- **Node.js 18+** (for the React UI)
+- **ffmpeg** (for frame extraction)
+
+### 3. Install backend dependencies (FastAPI + SAM2)
+```bash
+cd backend
+python3 -m venv .venv
+./.venv/bin/pip install -r requirements.txt
+./.venv/bin/pip install numpy matplotlib tqdm opencv-python torch torchvision torchaudio
+```
+
+Install SAM2 into the same venv:
+```bash
+cd ../sam2
+../backend/.venv/bin/pip install -e .
+```
+
+Download checkpoints:
+```bash
+cd ../checkpoints
+./download_ckpts.sh
+```
+
+### 4. Install frontend dependencies (React)
+```bash
+cd ../frontend
+npm install
+```
+
+### 5. Run the app (web UI + API)
+```bash
+# backend API
+cd ../backend
+./.venv/bin/uvicorn app.main:app --reload
+
+# frontend UI
+cd ../frontend
+npm run dev
+```
+
+### Notes
+- The **original Tk GUI** still exists in `Script/runEnvisionObjectAnnotator.py`, but the primary flow now runs through the **React + FastAPI** app.
+- The `sam2/` repository is cloned locally and **not committed**; follow the install steps above on each machine.
+- On Apple Silicon, MPS acceleration is experimental; CPU fallback is stable.
+- If you enable MPS, ensure `sam2/sam2_video_predictor.py` uses float32 for the image tensor on `_get_image_feature` (see local patch applied during setup).
 
 ---
 
@@ -95,4 +138,3 @@ If you use this tool in your research, please cite the EnvisionBox project.
 ##  Related Resources
 - [Meta AI SAM2](https://github.com/facebookresearch/sam2)  
 - [EnvisionBox Project](https://www.envisionbox.org)  
-
