@@ -21,6 +21,7 @@ class ConfigUpdate(BaseModel):
     batch_size: int = 50
     auto_fallback: bool = True
     use_mps: bool = False
+    model_key: Optional[str] = None
     export_video: bool = True
     export_elan: bool = True
     export_csv: bool = True
@@ -54,6 +55,7 @@ class ProcessingStatus(BaseModel):
 class ResultsResponse(BaseModel):
     session_id: str
     outputs: Dict[str, Optional[str]]
+    profiling: Optional[Dict[str, object]] = None
 
 
 class FrameExtractionRequest(BaseModel):

@@ -18,7 +18,7 @@ from .schemas import (
     FrameListResponse,
 )
 from .state import state
-from .processing import start_background_job, test_mask_preview
+from .processing import start_background_job, test_mask_preview, list_available_models
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 UPLOAD_DIR = BASE_DIR / "data" / "uploads"
@@ -40,6 +40,11 @@ app.add_middleware(
 @app.get("/health")
 def health():
     return {"status": "ok"}
+
+
+@app.get("/models")
+def get_models():
+    return {"models": list_available_models()}
 
 
 @app.post("/sessions", response_model=Session)
@@ -225,11 +230,10 @@ def test_mask(payload: AnnotationPayload):
     except Exception as exc:
         raise HTTPException(status_code=500, detail=str(exc))
 
-    rel = preview_path.relative_to(BASE_DIR)
     return {
         "status": "ok",
         "message": "Mask preview generated",
-        "preview_url": f"/previews/{rel.parts[-2]}/{rel.name}",
+        "preview_url": f"/previews/{payload.session_id}/{preview_path.name}",
     }
 
 
@@ -271,6 +275,14 @@ def get_processing_status(session_id: str):
         raise HTTPException(status_code=404, detail="Session not found")
 
 
+@app.get("/processing/preview/{session_id}")
+def get_processing_preview(session_id: str):
+    preview_path = SESSIONS_DIR / session_id / "previews" / "latest.jpg"
+    if not preview_path.exists():
+        raise HTTPException(status_code=404, detail="Preview not available")
+    return FileResponse(preview_path, media_type="image/jpeg", headers={"Cache-Control": "no-store"})
+
+
 @app.get("/results/{session_id}", response_model=ResultsResponse)
 def get_results(session_id: str):
     try:
@@ -281,6 +293,7 @@ def get_results(session_id: str):
     outputs = {}
     if session.config:
         outputs = session.config.get("outputs", {}) or {}
+    profiling = session.config.get("profiling") if session.config else None
 
     return ResultsResponse(
         session_id=session_id,
@@ -289,6 +302,7 @@ def get_results(session_id: str):
             "csv": outputs.get("csv"),
             "elan": outputs.get("elan"),
         },
+        profiling=profiling,
     )
 
 

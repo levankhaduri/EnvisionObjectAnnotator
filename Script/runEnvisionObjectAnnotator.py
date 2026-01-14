@@ -1749,7 +1749,7 @@ class VideoAnalysisApp:
         self.root.title("EnvisionObjectAnnotator")
         self.root.geometry("1000x800")
         self.root.minsize(950, 700)
-        
+
         # Initialize SAM2
         self.device = setup_device_ultra_optimized()
         self.predictor = None
@@ -1815,40 +1815,36 @@ class VideoAnalysisApp:
         """Initialize SAM2 predictor with ultra memory optimization"""
         try:
             configure_torch_ultra_conservative()
-            
+
             sam2_checkpoint = "../checkpoints/sam2.1_hiera_large.pt"
             model_cfg = "configs/sam2.1/sam2.1_hiera_l.yaml"
-            
+
             if not os.path.exists(sam2_checkpoint):
-                print("⚠️ Large model not found, checking for small model...")
+                print("Large model not found, checking for small model...")
                 sam2_checkpoint = "../checkpoints/sam2.1_hiera_small.pt"
                 model_cfg = "configs/sam2.1/sam2.1_hiera_s.yaml"
-                
+
                 if not os.path.exists(sam2_checkpoint):
-                    messagebox.showwarning("SAM2 Setup", 
-                        f"SAM2 checkpoints not found. Please update paths.")
+                    messagebox.showwarning("SAM2 Setup", "SAM2 checkpoints not found. Please update paths.")
                     return
                 else:
-                    print("✅ Using small model (sam2.1_hiera_small.pt) \n " \
-                    "with the sam2.1_hiera_s.yaml configuration")
+                    print("Using small model (sam2.1_hiera_small.pt) with the sam2.1_hiera_s.yaml configuration")
             else:
-                print("✅ Using large model (sam2.1_hiera_large.pt) \n " \
-                "with the sam2.1_hiera_l.yaml configuration")
-            
+                print("Using large model (sam2.1_hiera_large.pt) with the sam2.1_hiera_l.yaml configuration")
+
             from sam2.build_sam import build_sam2_video_predictor
-            
+
             self.predictor = build_sam2_video_predictor(model_cfg, sam2_checkpoint, device=self.device)
-            print("✅ SAM2 predictor initialized with enhanced overlap detection")
-            
+            print("SAM2 predictor initialized with enhanced overlap detection")
+
             gpu_info = get_gpu_memory_info()
             if gpu_info:
-                print(f"📊 GPU Memory: {gpu_info['allocated_gb']:.1f}GB allocated, {gpu_info['free_gb']:.1f}GB free")
-            
+                print(f"GPU Memory: {gpu_info['allocated_gb']:.1f}GB allocated, {gpu_info['free_gb']:.1f}GB free")
+
         except Exception as e:
             messagebox.showerror("Error", f"Failed to initialize SAM2: {str(e)}")
 
-    
-    
+
     def setup_gui(self, parent=None):
         """Setup the GUI with enhanced overlap detection options"""
         if parent is None:
@@ -1947,7 +1943,6 @@ class VideoAnalysisApp:
 
         tk.Button(video_input_frame, text="Browse", command=self.select_video).pack(side=tk.RIGHT)
 
-        
         # Simplified event detection options
         overlap_frame = tk.LabelFrame(main_frame, text="🎯 'Select Detection Threshold", font=("Arial", 9, "bold"))
         overlap_frame.pack(fill=tk.X, pady=(10, 10))

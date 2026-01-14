@@ -1,6 +1,6 @@
 import React, { useEffect, useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
-import { startProcessing, fetchProcessingStatus } from "../api.js";
+import { startProcessing, fetchProcessingStatus, getProcessingPreviewUrl } from "../api.js";
 
 export default function ProcessingPage() {
   const [sessionId, setSessionId] = useState("");
@@ -8,6 +8,7 @@ export default function ProcessingPage() {
   const [progress, setProgress] = useState(0);
   const [message, setMessage] = useState("");
   const [busy, setBusy] = useState(false);
+  const [previewUrl, setPreviewUrl] = useState("");
   const navigate = useNavigate();
 
   useEffect(() => {
@@ -39,6 +40,20 @@ export default function ProcessingPage() {
     timer = setInterval(poll, 4000);
     return () => clearInterval(timer);
   }, [sessionId, navigate]);
+
+  useEffect(() => {
+    let timer;
+    if (!sessionId) return;
+
+    const refreshPreview = () => {
+      const url = `${getProcessingPreviewUrl(sessionId)}?t=${Date.now()}`;
+      setPreviewUrl(url);
+    };
+
+    refreshPreview();
+    timer = setInterval(refreshPreview, 3000);
+    return () => clearInterval(timer);
+  }, [sessionId]);
 
   async function handleStart() {
     if (!sessionId) {
@@ -154,7 +169,16 @@ export default function ProcessingPage() {
               <div className="control-panel">
                 <h2 className="text-xl font-bold mb-4">Preview</h2>
                 <div className="video-preview">
-                  <div className="spinner"></div>
+                  {previewUrl ? (
+                    <img
+                      src={previewUrl}
+                      alt="Processing preview"
+                      onError={() => setPreviewUrl("")}
+                      style={{ width: "100%", height: "100%", objectFit: "contain" }}
+                    />
+                  ) : (
+                    <div className="spinner"></div>
+                  )}
                 </div>
                 <p className="text-sm text-gray-500 mt-3">Live preview will appear here during processing.</p>
               </div>

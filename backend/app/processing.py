@@ -7,6 +7,12 @@ import os
 import re
 import cv2
 import numpy as np
+import time
+
+try:
+    import psutil
+except ImportError:  # pragma: no cover - optional dependency
+    psutil = None
 
 from .schemas import ProcessingStatus
 from .state import state
@@ -15,6 +21,7 @@ from .pipeline import (
     configure_torch_ultra_conservative,
     UltraOptimizedProcessor,
     get_video_fps,
+    get_gpu_memory_info,
 )
 
 BASE_DIR = Path(__file__).resolve().parent.parent
@@ -22,17 +29,81 @@ REPO_DIR = BASE_DIR.parent
 SESSIONS_DIR = BASE_DIR / "data" / "sessions"
 
 
-def _resolve_model_config():
-    checkpoint_large = REPO_DIR / "checkpoints" / "sam2.1_hiera_large.pt"
-    checkpoint_small = REPO_DIR / "checkpoints" / "sam2.1_hiera_small.pt"
-    if checkpoint_large.exists():
-        return "configs/sam2.1/sam2.1_hiera_l.yaml", checkpoint_large
-    if checkpoint_small.exists():
-        return "configs/sam2.1/sam2.1_hiera_s.yaml", checkpoint_small
+MODEL_CATALOG = [
+    {
+        "key": "sam2.1_hiera_l",
+        "label": "SAM2.1 Large (hiera_l)",
+        "checkpoint": REPO_DIR / "checkpoints" / "sam2.1_hiera_large.pt",
+        "config": REPO_DIR / "configs" / "sam2.1" / "sam2.1_hiera_l.yaml",
+    },
+    {
+        "key": "sam2.1_hiera_b+",
+        "label": "SAM2.1 Base+ (hiera_b+)",
+        "checkpoint": REPO_DIR / "checkpoints" / "sam2.1_hiera_base_plus.pt",
+        "config": REPO_DIR / "configs" / "sam2.1" / "sam2.1_hiera_b+.yaml",
+    },
+    {
+        "key": "sam2.1_hiera_s",
+        "label": "SAM2.1 Small (hiera_s)",
+        "checkpoint": REPO_DIR / "checkpoints" / "sam2.1_hiera_small.pt",
+        "config": REPO_DIR / "configs" / "sam2.1" / "sam2.1_hiera_s.yaml",
+    },
+    {
+        "key": "sam2.1_hiera_t",
+        "label": "SAM2.1 Tiny (hiera_t)",
+        "checkpoint": REPO_DIR / "checkpoints" / "sam2.1_hiera_tiny.pt",
+        "config": REPO_DIR / "configs" / "sam2.1" / "sam2.1_hiera_t.yaml",
+    },
+    {
+        "key": "edgetam",
+        "label": "EdgeTAM (edgetam)",
+        "checkpoint": REPO_DIR / "EdgeTAM" / "checkpoints" / "edgetam.pt",
+        "config": REPO_DIR / "EdgeTAM" / "sam2" / "configs" / "edgetam.yaml",
+    },
+]
+
+
+def list_available_models():
+    models = []
+    for item in MODEL_CATALOG:
+        config_path = item.get("config")
+        config_ok = config_path.exists() if isinstance(config_path, Path) else True
+        models.append(
+            {
+                "key": item["key"],
+                "label": item["label"],
+                "available": item["checkpoint"].exists() and config_ok,
+            }
+        )
+    return models
+
+
+def _resolve_model_config(model_key=None):
+    entry = _select_model_entry(model_key)
+    return str(entry["config"]), entry["checkpoint"]
+
+
+def _select_model_entry(model_key=None):
+    if model_key and model_key != "auto":
+        for item in MODEL_CATALOG:
+            if item["key"] == model_key:
+                if not item["checkpoint"].exists():
+                    raise FileNotFoundError(f"Checkpoint missing for model {model_key}")
+                config_path = item.get("config")
+                if config_path and isinstance(config_path, Path) and not config_path.exists():
+                    raise FileNotFoundError(f"Config missing for model {model_key}")
+                return item
+        raise ValueError(f"Unknown model key: {model_key}")
+
+    for item in MODEL_CATALOG:
+        config_path = item.get("config")
+        config_ok = config_path.exists() if isinstance(config_path, Path) else True
+        if item["checkpoint"].exists() and config_ok:
+            return item
     raise FileNotFoundError("SAM2 checkpoints not found")
 
 
-def _build_predictor(use_mps=False):
+def _build_predictor(use_mps=False, model_key=None):
     from sam2.build_sam import build_sam2_video_predictor
 
     configure_torch_ultra_conservative()
@@ -41,7 +112,8 @@ def _build_predictor(use_mps=False):
     if device.type == "mps" and not use_mps:
         device = torch.device("cpu")
 
-    model_cfg, checkpoint = _resolve_model_config()
+    entry = _select_model_entry(model_key=model_key)
+    model_cfg, checkpoint = str(entry["config"]), entry["checkpoint"]
     predictor = build_sam2_video_predictor(model_cfg, str(checkpoint), device=device)
     if hasattr(predictor, "model"):
         try:
@@ -51,6 +123,17 @@ def _build_predictor(use_mps=False):
     return predictor, device
 
 
+def _get_ram_info():
+    if psutil is None:
+        return None
+    mem = psutil.virtual_memory()
+    return {
+        "used_gb": mem.used / 1024**3,
+        "available_gb": mem.available / 1024**3,
+        "total_gb": mem.total / 1024**3,
+    }
+
+
 def test_mask_preview(session_id, frame_index, object_name, points):
     session = state.get_session(session_id)
     frames_dir = SESSIONS_DIR / session_id / "frames"
@@ -58,7 +141,8 @@ def test_mask_preview(session_id, frame_index, object_name, points):
         raise FileNotFoundError("Frames not found")
 
     use_mps = bool((session.config or {}).get("use_mps", False))
-    predictor, _ = _build_predictor(use_mps=use_mps)
+    model_key = (session.config or {}).get("model_key") or "auto"
+    predictor, _ = _build_predictor(use_mps=use_mps, model_key=model_key)
 
     inference_state = predictor.init_state(
         video_path=str(frames_dir),
@@ -179,6 +263,7 @@ def _load_reference_annotations(session_id, reference_frame):
 
 def run_processing(session_id):
     error_log = SESSIONS_DIR / session_id / "processing_error.log"
+    started_at = time.perf_counter()
     try:
         session = state.get_session(session_id)
     except KeyError:
@@ -190,6 +275,16 @@ def run_processing(session_id):
         _set_status(session_id, "error", 0.0, "Frames not found. Extract frames first.")
         return
 
+    preview_dir = SESSIONS_DIR / session_id / "previews"
+    preview_dir.mkdir(parents=True, exist_ok=True)
+    preview_path = preview_dir / "latest.jpg"
+
+    def _save_preview(frame):
+        try:
+            cv2.imwrite(str(preview_path), frame)
+        except Exception:
+            pass
+
     config = session.config or {}
     overlap_threshold = float(config.get("overlap_threshold", 0.1))
     batch_size = int(config.get("batch_size", 50))
@@ -199,6 +294,12 @@ def run_processing(session_id):
     export_csv = bool(config.get("export_csv", True))
     reference_frame = int(config.get("reference_frame", 0))
     use_mps = bool(config.get("use_mps", False))
+    model_key = config.get("model_key") or "auto"
+    resolved_model_key = model_key
+    model_label = model_key
+    frame_count = len(list(frames_dir.glob("*.jpg")))
+    gpu_start = get_gpu_memory_info()
+    ram_start = _get_ram_info()
 
     try:
         _set_status(session_id, "initializing", 0.05, "Loading annotations")
@@ -206,6 +307,7 @@ def run_processing(session_id):
     except Exception as exc:
         _set_status(session_id, "error", 0.05, f"Annotation error: {exc}")
         return
+    annotations_done = time.perf_counter()
 
     try:
         _set_status(session_id, "initializing", 0.1, "Loading SAM2 model")
@@ -220,16 +322,13 @@ def run_processing(session_id):
         if device.type == "mps" and not use_mps:
             device = torch.device("cpu")
 
-        checkpoint_large = REPO_DIR / "checkpoints" / "sam2.1_hiera_large.pt"
-        checkpoint_small = REPO_DIR / "checkpoints" / "sam2.1_hiera_small.pt"
-        if checkpoint_large.exists():
-            checkpoint = checkpoint_large
-            model_cfg = "configs/sam2.1/sam2.1_hiera_l.yaml"
-        elif checkpoint_small.exists():
-            checkpoint = checkpoint_small
-            model_cfg = "configs/sam2.1/sam2.1_hiera_s.yaml"
-        else:
-            _set_status(session_id, "error", 0.1, "SAM2 checkpoints not found")
+        try:
+            model_entry = _select_model_entry(model_key=model_key)
+            model_cfg, checkpoint = str(model_entry["config"]), model_entry["checkpoint"]
+            resolved_model_key = model_entry["key"]
+            model_label = model_entry["label"]
+        except Exception as exc:
+            _set_status(session_id, "error", 0.1, f"Model selection error: {exc}")
             return
 
         predictor = build_sam2_video_predictor(model_cfg, str(checkpoint), device=device)
@@ -245,6 +344,9 @@ def run_processing(session_id):
             reference_frame=reference_frame,
             batch_size=batch_size,
             auto_fallback=auto_fallback,
+            preview_callback=_save_preview,
+            preview_stride=1,
+            preview_max_dim=720,
         )
         wrapped = HeadlessProcessor(processor)
     except ImportError as exc:
@@ -255,6 +357,7 @@ def run_processing(session_id):
         error_log.write_text(traceback.format_exc())
         _set_status(session_id, "error", 0.1, f"Model init error: {exc}")
         return
+    model_done = time.perf_counter()
 
     try:
         _set_status(session_id, "processing", 0.2, "Processing frames")
@@ -266,6 +369,7 @@ def run_processing(session_id):
         error_log.write_text(traceback.format_exc())
         _set_status(session_id, "error", 0.6, f"Processing error: {exc}")
         return
+    processing_done = time.perf_counter()
 
     try:
         _set_status(session_id, "saving", 0.85, "Writing outputs")
@@ -288,7 +392,28 @@ def run_processing(session_id):
             wrapped.save_csv(results, object_names, str(csv_path))
             outputs["csv"] = str(csv_path)
 
-        updated_config = {**session.config, "outputs": outputs}
+        finished_at = time.perf_counter()
+        processing_seconds = max(processing_done - model_done, 1e-6)
+        profiling = {
+            "model_key": resolved_model_key,
+            "model_label": model_label,
+            "device": str(device),
+            "frames_total": frame_count,
+            "objects_total": len(object_names),
+            "processing_fps": frame_count / processing_seconds,
+            "timings_s": {
+                "load_annotations": annotations_done - started_at,
+                "model_init": model_done - annotations_done,
+                "processing": processing_done - model_done,
+                "saving": finished_at - processing_done,
+                "total": finished_at - started_at,
+            },
+            "gpu_mem_start": gpu_start,
+            "gpu_mem_end": get_gpu_memory_info(),
+            "ram_start": ram_start,
+            "ram_end": _get_ram_info(),
+        }
+        updated_config = {**session.config, "outputs": outputs, "profiling": profiling}
         state.update_session(session_id, config=updated_config)
         _set_status(session_id, "completed", 1.0, "Processing complete")
     except Exception as exc:

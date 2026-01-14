@@ -33,10 +33,12 @@ The tool was developed as part of the **EnvisionBOXBABY project**, with a focus 
 - 🔍 **Event detection**: logs “looking at” events whenever the target overlaps another object:
   - By pixel overlap above a threshold  
   - Or by centroid inclusion  
+- ⚙️ **Model selection**: choose between SAM2.1 sizes or EdgeTAM (if installed).
 - 📂 **Outputs**:
   - Annotated **video** with masks and status overlays
   - Frame-by-frame **CSV** with bounding boxes, centroids, overlap info
   - Time-aligned **ELAN (.eaf)** file for qualitative coding
+- 📊 **Profiling**: timings, FPS, and GPU/RAM snapshots shown in Results.
 
 ---
 
@@ -69,6 +71,14 @@ cd ../sam2
 ../backend/.venv/bin/pip install -e .
 ```
 
+Optional: enable EdgeTAM model selection by cloning EdgeTAM in the repo root and installing it into the same venv:
+```bash
+git clone https://github.com/facebookresearch/EdgeTAM.git
+cd EdgeTAM
+../backend/.venv/bin/pip install -e .
+../backend/.venv/bin/pip install timm
+```
+
 Download checkpoints:
 ```bash
 cd ../checkpoints
@@ -94,7 +104,7 @@ npm run dev
 
 ### Notes
 - The **original Tk GUI** still exists in `Script/runEnvisionObjectAnnotator.py`, but the primary flow now runs through the **React + FastAPI** app.
-- The `sam2/` repository is cloned locally and **not committed**; follow the install steps above on each machine.
+- The `sam2/` and `EdgeTAM/` repositories are cloned locally and **not committed**; follow the install steps above on each machine.
 - On Apple Silicon, MPS acceleration is experimental; CPU fallback is stable.
 - If you enable MPS, ensure `sam2/sam2_video_predictor.py` uses float32 for the image tensor on `_get_image_feature` (see local patch applied during setup).
 
@@ -111,7 +121,8 @@ npm run dev
    - Press **T** to test masks  
    - Press **Enter** when done  
 4. **Set detection threshold** → default is 10% overlap.  
-5. **Process video** → masks are propagated, overlaps are detected, and outputs are generated.
+5. **Choose model** → select SAM2.1 or EdgeTAM on the Config page.  
+6. **Process video** → masks are propagated, overlaps are detected, and outputs are generated.
 
 ---
 

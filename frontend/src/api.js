@@ -109,10 +109,22 @@ export async function fetchProcessingStatus(sessionId) {
   return res.json();
 }
 
+export function getProcessingPreviewUrl(sessionId) {
+  return `${API_BASE}/processing/preview/${sessionId}`;
+}
+
 export async function fetchResults(sessionId) {
   const res = await fetch(`${API_BASE}/results/${sessionId}`);
   if (!res.ok) {
     throw new Error("Failed to fetch results");
+  }
+  return res.json();
+}
+
+export async function fetchModels() {
+  const res = await fetch(`${API_BASE}/models`);
+  if (!res.ok) {
+    throw new Error("Failed to fetch models");
   }
   return res.json();
 }

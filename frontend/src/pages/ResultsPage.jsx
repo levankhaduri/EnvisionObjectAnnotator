@@ -5,6 +5,7 @@ import { fetchResults, getResultDownloadUrl } from "../api.js";
 export default function ResultsPage() {
   const [sessionId, setSessionId] = useState("");
   const [outputs, setOutputs] = useState({});
+  const [profiling, setProfiling] = useState(null);
   const [status, setStatus] = useState("Loading results...");
 
   useEffect(() => {
@@ -23,6 +24,7 @@ export default function ResultsPage() {
       try {
         const data = await fetchResults(sessionId);
         setOutputs(data.outputs || {});
+        setProfiling(data.profiling || null);
         setStatus("Results ready.");
       } catch (err) {
         setStatus(err.message);
@@ -30,6 +32,15 @@ export default function ResultsPage() {
     }
     load();
   }, [sessionId]);
+
+  const formatSeconds = (value) => {
+    if (typeof value !== "number" || Number.isNaN(value)) return "---";
+    return `${value.toFixed(2)}s`;
+  };
+  const formatFloat = (value, decimals = 2) => {
+    if (typeof value !== "number" || Number.isNaN(value)) return "---";
+    return value.toFixed(decimals);
+  };
 
   return (
     <div className="bg-white text-black">
@@ -51,6 +62,9 @@ export default function ResultsPage() {
         .stat-card:hover { border-color: black; transform: translateY(-2px); }
         .file-card { background: white; border: 2px solid #e5e7eb; border-radius: 8px; padding: 20px; transition: all 0.3s ease; }
         .file-card:hover { border-color: #d1d5db; }
+        .stat-row { display: flex; justify-content: space-between; gap: 12px; font-size: 13px; }
+        .stat-label { color: #6b7280; }
+        summary { cursor: pointer; }
       `}</style>
 
       <header className="bg-white border-b-2 border-black fixed w-full z-50">
@@ -158,6 +172,86 @@ export default function ResultsPage() {
                   </div>
                 </div>
               </div>
+
+              {profiling && (
+                <details className="control-panel">
+                  <summary className="text-xl font-bold">Profiling</summary>
+                  <div className="mt-4 space-y-2">
+                    <div className="stat-row">
+                      <span className="stat-label">Model</span>
+                      <span>{profiling.model_label || profiling.model_key || "---"}</span>
+                    </div>
+                    <div className="stat-row">
+                      <span className="stat-label">Device</span>
+                      <span>{profiling.device || "---"}</span>
+                    </div>
+                    <div className="stat-row">
+                      <span className="stat-label">Frames</span>
+                      <span>{profiling.frames_total ?? "---"}</span>
+                    </div>
+                    <div className="stat-row">
+                      <span className="stat-label">Objects</span>
+                      <span>{profiling.objects_total ?? "---"}</span>
+                    </div>
+                    <div className="stat-row">
+                      <span className="stat-label">Processing FPS</span>
+                      <span>{formatFloat(profiling.processing_fps)}</span>
+                    </div>
+                    <div className="stat-row">
+                      <span className="stat-label">Load annotations</span>
+                      <span>{formatSeconds(profiling.timings_s?.load_annotations)}</span>
+                    </div>
+                    <div className="stat-row">
+                      <span className="stat-label">Model init</span>
+                      <span>{formatSeconds(profiling.timings_s?.model_init)}</span>
+                    </div>
+                    <div className="stat-row">
+                      <span className="stat-label">Processing</span>
+                      <span>{formatSeconds(profiling.timings_s?.processing)}</span>
+                    </div>
+                    <div className="stat-row">
+                      <span className="stat-label">Saving outputs</span>
+                      <span>{formatSeconds(profiling.timings_s?.saving)}</span>
+                    </div>
+                    <div className="stat-row">
+                      <span className="stat-label">Total time</span>
+                      <span>{formatSeconds(profiling.timings_s?.total)}</span>
+                    </div>
+                    {profiling.gpu_mem_start && (
+                      <div className="stat-row">
+                        <span className="stat-label">GPU start (GB)</span>
+                        <span>
+                          {formatFloat(profiling.gpu_mem_start.allocated_gb)} alloc / {formatFloat(profiling.gpu_mem_start.reserved_gb)} reserved
+                        </span>
+                      </div>
+                    )}
+                    {profiling.gpu_mem_end && (
+                      <div className="stat-row">
+                        <span className="stat-label">GPU end (GB)</span>
+                        <span>
+                          {formatFloat(profiling.gpu_mem_end.allocated_gb)} alloc / {formatFloat(profiling.gpu_mem_end.reserved_gb)} reserved
+                        </span>
+                      </div>
+                    )}
+                    {profiling.ram_start && (
+                      <div className="stat-row">
+                        <span className="stat-label">RAM start (GB)</span>
+                        <span>
+                          {formatFloat(profiling.ram_start.used_gb)} used / {formatFloat(profiling.ram_start.available_gb)} free
+                        </span>
+                      </div>
+                    )}
+                    {profiling.ram_end && (
+                      <div className="stat-row">
+                        <span className="stat-label">RAM end (GB)</span>
+                        <span>
+                          {formatFloat(profiling.ram_end.used_gb)} used / {formatFloat(profiling.ram_end.available_gb)} free
+                        </span>
+                      </div>
+                    )}
+                  </div>
+                </details>
+              )}
             </div>
           </div>
         </div>

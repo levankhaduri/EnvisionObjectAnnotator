@@ -1,6 +1,6 @@
 import React, { useEffect, useRef, useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
-import { createSession, uploadVideo, updateConfig, extractFrames } from "../api.js";
+import { createSession, uploadVideo, updateConfig, extractFrames, fetchModels, listFrames } from "../api.js";
 
 export default function ConfigPage() {
   const [sessionId, setSessionId] = useState("");
@@ -13,6 +13,12 @@ export default function ConfigPage() {
   const [exportElan, setExportElan] = useState(true);
   const [exportCsv, setExportCsv] = useState(true);
   const [outputDir, setOutputDir] = useState("");
+  const [modelKey, setModelKey] = useState("auto");
+  const [models, setModels] = useState([
+    { key: "auto", label: "Auto (largest available)", available: true },
+  ]);
+  const [framesReady, setFramesReady] = useState(false);
+  const [frameCount, setFrameCount] = useState(0);
   const [status, setStatus] = useState("Ready to start.");
   const [busy, setBusy] = useState(false);
   const inputRef = useRef(null);
@@ -24,6 +30,52 @@ export default function ConfigPage() {
       setSessionId(stored);
       setStatus("Loaded existing session. Upload a video or update config.");
     }
+  }, []);
+
+  useEffect(() => {
+    if (!sessionId) {
+      setFramesReady(false);
+      setFrameCount(0);
+      return;
+    }
+    let mounted = true;
+    listFrames(sessionId)
+      .then((data) => {
+        if (!mounted) return;
+        const count = data.frame_count || 0;
+        setFrameCount(count);
+        setFramesReady(count > 0);
+        if (count > 0) {
+          setStatus("Frames detected. Save configuration to continue.");
+        }
+      })
+      .catch(() => {
+        if (!mounted) return;
+        setFramesReady(false);
+        setFrameCount(0);
+      });
+    return () => {
+      mounted = false;
+    };
+  }, [sessionId]);
+
+  useEffect(() => {
+    let mounted = true;
+    fetchModels()
+      .then((data) => {
+        if (!mounted) return;
+        const apiModels = data.models || [];
+        setModels([
+          { key: "auto", label: "Auto (largest available)", available: true },
+          ...apiModels,
+        ]);
+      })
+      .catch(() => {
+        if (!mounted) return;
+      });
+    return () => {
+      mounted = false;
+    };
   }, []);
 
   async function handleCreateSession() {
@@ -56,6 +108,14 @@ export default function ConfigPage() {
       await uploadVideo(sessionId, videoFile);
       setStatus("Extracting frames...");
       await extractFrames(sessionId);
+      try {
+        const data = await listFrames(sessionId);
+        const count = data.frame_count || 0;
+        setFrameCount(count);
+        setFramesReady(count > 0);
+      } catch (err) {
+        setFramesReady(true);
+      }
       setStatus("Frames ready. Save configuration to continue.");
     } catch (err) {
       setStatus(err.message);
@@ -69,6 +129,10 @@ export default function ConfigPage() {
       setStatus("Create a session first.");
       return;
     }
+    if (!framesReady) {
+      setStatus("Upload a video and extract frames before continuing.");
+      return;
+    }
     try {
       setBusy(true);
       setStatus("Saving configuration...");
@@ -78,6 +142,7 @@ export default function ConfigPage() {
         batch_size: Number(batchSize),
         auto_fallback: autoFallback,
         use_mps: useMps,
+        model_key: modelKey,
         export_video: exportVideo,
         export_elan: exportElan,
         export_csv: exportCsv,
@@ -91,6 +156,10 @@ export default function ConfigPage() {
       setBusy(false);
     }
   }
+
+  const missingSteps = [];
+  if (!sessionId) missingSteps.push("Create a session.");
+  if (!framesReady) missingSteps.push("Upload a video and extract frames.");
 
   return (
     <div className="bg-white text-black">
@@ -122,6 +191,8 @@ export default function ConfigPage() {
         .step-circle.active { background: black; color: white; border-color: black; }
         .step-circle.completed { background: #d1d5db; color: white; border-color: #d1d5db; }
         .step-line { width: 40px; height: 2px; background: #e5e7eb; }
+        .status-box { border-radius: 8px; padding: 10px 12px; font-size: 13px; margin-top: 12px; }
+        .status-box.error { background: #fee2e2; border: 1px solid #fecaca; color: #991b1b; }
       `}</style>
 
       <header className="bg-white border-b-2 border-black fixed w-full z-50">
@@ -134,7 +205,7 @@ export default function ConfigPage() {
             <Link className="btn-secondary" to="/" aria-label="Go back">
               <i className="fas fa-arrow-left mr-2"></i>Back
             </Link>
-            <button className="btn-primary" onClick={handleSaveConfig} disabled={busy} aria-label="Proceed to annotation">
+            <button className="btn-primary" onClick={handleSaveConfig} disabled={busy || missingSteps.length > 0} aria-label="Proceed to annotation">
               Next Step<i className="fas fa-arrow-right ml-2"></i>
             </button>
           </div>
@@ -192,6 +263,23 @@ export default function ConfigPage() {
 
               <div className="control-panel">
                 <h2 className="text-2xl font-bold mb-4">Detection Settings</h2>
+                <div className="mb-4">
+                  <label className="block text-sm font-medium mb-2">Model Selection</label>
+                  <select
+                    className="dropdown"
+                    value={modelKey}
+                    onChange={(event) => setModelKey(event.target.value)}
+                  >
+                    {models.map((model) => (
+                      <option key={model.key} value={model.key} disabled={!model.available}>
+                        {model.label}{model.available ? "" : " (missing checkpoint)"}
+                      </option>
+                    ))}
+                  </select>
+                  <p className="text-xs text-gray-500 mt-2">
+                    Auto selects the largest available checkpoint in your backend.
+                  </p>
+                </div>
                 <label className="block text-sm font-medium mb-2">Overlap Threshold ({threshold}%)</label>
                 <input
                   type="range"
@@ -262,6 +350,19 @@ export default function ConfigPage() {
                   )}
                 </div>
                 <p className="text-sm text-gray-500 mt-3">{status}</p>
+                {missingSteps.length > 0 && (
+                  <div className="status-box error">
+                    <div className="font-semibold mb-1">Complete before continuing:</div>
+                    <ul className="list-disc list-inside">
+                      {missingSteps.map((step) => (
+                        <li key={step}>{step}</li>
+                      ))}
+                    </ul>
+                  </div>
+                )}
+                {framesReady && frameCount > 0 && (
+                  <p className="text-xs text-gray-500 mt-2">Detected {frameCount} extracted frames.</p>
+                )}
               </div>
 
               <div className="control-panel">

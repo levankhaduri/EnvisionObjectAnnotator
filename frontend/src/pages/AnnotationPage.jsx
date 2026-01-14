@@ -17,9 +17,12 @@ export default function AnnotationPage() {
   const [objectList, setObjectList] = useState([]);
   const [selectedObject, setSelectedObject] = useState("");
   const [frameObjects, setFrameObjects] = useState({});
+  const [savedCounts, setSavedCounts] = useState({});
   const [labelMode, setLabelMode] = useState(1);
   const [status, setStatus] = useState("Load a session to begin annotating.");
   const [busy, setBusy] = useState(false);
+  const [maskPreviewUrl, setMaskPreviewUrl] = useState("");
+  const [showPreview, setShowPreview] = useState(false);
   const imgRef = useRef(null);
   const navigate = useNavigate();
 
@@ -53,6 +56,11 @@ export default function AnnotationPage() {
         const objects = data.objects || {};
         setFrameObjects(objects);
         setObjectList(Object.keys(objects));
+        const counts = {};
+        Object.entries(objects).forEach(([name, pts]) => {
+          counts[name] = Array.isArray(pts) ? pts.length : 0;
+        });
+        setSavedCounts(counts);
         const first = Object.keys(objects)[0] || "";
         setSelectedObject(first);
         setPoints(first ? objects[first] : []);
@@ -103,6 +111,10 @@ export default function AnnotationPage() {
         object_name: selectedObject,
         points: (frameObjects[selectedObject] || []).map(({ x, y, label }) => ({ x, y, label })),
       });
+      setSavedCounts((prev) => ({
+        ...prev,
+        [selectedObject]: (frameObjects[selectedObject] || []).length,
+      }));
       setStatus("Points saved.");
     } catch (err) {
       setStatus(err.message);
@@ -130,7 +142,8 @@ export default function AnnotationPage() {
       });
       setStatus(response.message || "Mask test complete.");
       if (response.preview_url) {
-        window.open(`${API_BASE}${response.preview_url}`, "_blank", "noopener,noreferrer");
+        setMaskPreviewUrl(`${API_BASE}${response.preview_url}?t=${Date.now()}`);
+        setShowPreview(true);
       }
     } catch (err) {
       setStatus(err.message);
@@ -154,10 +167,19 @@ export default function AnnotationPage() {
     const updated = { ...frameObjects, [name]: [] };
     setFrameObjects(updated);
     setObjectList(Object.keys(updated));
+    setSavedCounts((prev) => ({ ...prev, [name]: 0 }));
     setSelectedObject(name);
     setPoints([]);
     setObjectName("");
   }
+
+  const hasSavedObject = Object.entries(savedCounts).some(
+    ([name, count]) => count > 0 && (frameObjects[name]?.length || 0) === count
+  );
+  const missingSteps = [];
+  if (!sessionId) missingSteps.push("Load a session from the Config page.");
+  if (frames.length === 0) missingSteps.push("Extract frames on the Config page.");
+  if (!hasSavedObject) missingSteps.push("Save points for at least one object.");
 
   const frameName = frames[currentIndex];
   const frameUrl = sessionId && frameName ? `${API_BASE}/frames/${sessionId}/${frameName}` : "";
@@ -183,11 +205,20 @@ export default function AnnotationPage() {
         .object-card { background: white; border: 2px solid #e5e7eb; border-radius: 8px; padding: 12px; transition: all 0.3s ease; }
         .object-card.active { border-color: black; background: #f9fafb; }
         .object-card:hover { border-color: #d1d5db; }
+        .sticky-objects { position: sticky; top: 110px; align-self: start; }
         .point-marker { position: absolute; width: 12px; height: 12px; border-radius: 50%; border: 2px solid white; transform: translate(-50%, -50%); pointer-events: none; box-shadow: 0 2px 4px rgba(0,0,0,0.3); }
         .point-marker.positive { background: #22c55e; }
         .point-marker.negative { background: #ef4444; }
         .keyboard-hint { background: #f3f4f6; border: 2px solid #e5e7eb; border-radius: 8px; padding: 8px 12px; font-size: 13px; display: inline-flex; align-items: center; gap: 6px; }
         .key { background: white; border: 2px solid #d1d5db; border-radius: 4px; padding: 2px 8px; font-weight: 600; font-size: 12px; }
+        .modal-backdrop { position: fixed; inset: 0; background: rgba(0,0,0,0.65); display: flex; align-items: center; justify-content: center; z-index: 1000; }
+        .modal-card { background: white; border-radius: 12px; padding: 16px; width: min(900px, 90vw); box-shadow: 0 20px 40px rgba(0,0,0,0.3); }
+        .modal-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px; }
+        .modal-close { background: black; color: white; border: none; border-radius: 6px; padding: 6px 12px; cursor: pointer; }
+        .modal-body { background: #000; border-radius: 8px; padding: 8px; display: flex; justify-content: center; align-items: center; }
+        .modal-body img { max-width: 100%; max-height: 70vh; object-fit: contain; }
+        .status-box { border-radius: 8px; padding: 10px 12px; font-size: 13px; margin-top: 12px; }
+        .status-box.error { background: #fee2e2; border: 1px solid #fecaca; color: #991b1b; }
         input[type="text"] { border: 2px solid #e5e7eb; border-radius: 8px; padding: 10px 16px; width: 100%; transition: all 0.3s ease; }
         input[type="text"]:focus { outline: none; border-color: black; }
         input[type="range"] { -webkit-appearance: none; appearance: none; width: 100%; height: 8px; border-radius: 4px; background: #e5e7eb; outline: none; }
@@ -204,7 +235,7 @@ export default function AnnotationPage() {
             <Link className="btn-secondary" to="/config" aria-label="Go back">
               <i className="fas fa-arrow-left mr-2"></i>Back
             </Link>
-            <button className="btn-primary" onClick={() => navigate("/processing")} disabled={busy} aria-label="Proceed to processing">
+            <button className="btn-primary" onClick={() => navigate("/processing")} disabled={busy || missingSteps.length > 0} aria-label="Proceed to processing">
               Next Step<i className="fas fa-arrow-right ml-2"></i>
             </button>
           </div>
@@ -268,26 +299,9 @@ export default function AnnotationPage() {
                   </button>
                 </div>
               </div>
-
-              <div className="control-panel">
-                <h2 className="text-2xl font-bold mb-4">Point Controls</h2>
-                <div className="grid grid-cols-2 gap-4">
-                  <button className="btn-primary" onClick={() => setLabelMode(1)}>
-                    <i className="fas fa-plus mr-2"></i>Positive Points
-                  </button>
-                  <button className="btn-secondary" onClick={() => setLabelMode(0)}>
-                    <i className="fas fa-minus mr-2"></i>Negative Points
-                  </button>
-                </div>
-                <div className="flex items-center gap-4 mt-4">
-                  <div className="keyboard-hint"><span className="key">C</span> Name Object</div>
-                  <div className="keyboard-hint"><span className="key">T</span> Test Mask</div>
-                  <div className="keyboard-hint"><span className="key">Enter</span> Confirm</div>
-                </div>
-              </div>
             </div>
 
-            <div className="space-y-6">
+            <div className="space-y-6 sticky-objects">
               <div className="control-panel">
                 <h2 className="text-xl font-bold mb-4">Objects</h2>
                 <input
@@ -320,11 +334,56 @@ export default function AnnotationPage() {
                   <button className="btn-secondary" onClick={handleTestMask} disabled={busy}>Test Mask</button>
                 </div>
                 <p className="text-sm text-gray-500 mt-3">{status}</p>
+                {missingSteps.length > 0 && (
+                  <div className="status-box error">
+                    <div className="font-semibold mb-1">Complete before continuing:</div>
+                    <ul className="list-disc list-inside">
+                      {missingSteps.map((step) => (
+                        <li key={step}>{step}</li>
+                      ))}
+                    </ul>
+                  </div>
+                )}
+              </div>
+
+              <div className="control-panel">
+                <h2 className="text-2xl font-bold mb-4">Point Controls</h2>
+                <div className="grid grid-cols-2 gap-4">
+                  <button className="btn-primary" onClick={() => setLabelMode(1)}>
+                    <i className="fas fa-plus mr-2"></i>Positive Points
+                  </button>
+                  <button className="btn-secondary" onClick={() => setLabelMode(0)}>
+                    <i className="fas fa-minus mr-2"></i>Negative Points
+                  </button>
+                </div>
+                <div className="flex items-center gap-4 mt-4">
+                  <div className="keyboard-hint"><span className="key">C</span> Name Object</div>
+                  <div className="keyboard-hint"><span className="key">T</span> Test Mask</div>
+                  <div className="keyboard-hint"><span className="key">Enter</span> Confirm</div>
+                </div>
               </div>
             </div>
           </div>
         </div>
       </main>
+
+      {showPreview && (
+        <div className="modal-backdrop" onClick={() => setShowPreview(false)}>
+          <div className="modal-card" onClick={(event) => event.stopPropagation()}>
+            <div className="modal-header">
+              <h3 className="text-lg font-semibold">Mask Preview</h3>
+              <button className="modal-close" onClick={() => setShowPreview(false)}>Close</button>
+            </div>
+            <div className="modal-body">
+              {maskPreviewUrl ? (
+                <img src={maskPreviewUrl} alt="Mask preview" />
+              ) : (
+                <div className="text-gray-400">No preview available</div>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

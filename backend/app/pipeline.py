@@ -644,8 +644,15 @@ class UltraOptimizedProcessor:
         height, width = first_frame.shape[:2]
 
         out_width = width * 2 if show_original else width
-        fourcc = cv2.VideoWriter_fourcc(*"mp4v")
-        out = cv2.VideoWriter(output_path, fourcc, fps, (int(out_width), int(height)))
+        out = None
+        for codec in ("avc1", "H264", "mp4v"):
+            fourcc = cv2.VideoWriter_fourcc(*codec)
+            out = cv2.VideoWriter(output_path, fourcc, fps, (int(out_width), int(height)))
+            if out.isOpened():
+                print(f"✅ VideoWriter initialized with codec {codec}")
+                break
+        if out is None or not out.isOpened():
+            raise RuntimeError("Failed to initialize video writer (check codec support).")
 
         cmap = plt.get_cmap("tab10")
         overlap_frame_count = 0
@@ -718,11 +725,12 @@ class UltraOptimizedProcessor:
                         else:
                             color = base_color
 
-                        color_mask = np.zeros_like(overlay)
+                        # Blend only inside the mask to avoid darkening the whole frame
                         for c in range(3):
-                            color_mask[:, :, c][mask] = color[c]
-
-                        cv2.addWeighted(overlay, 1 - alpha, color_mask, alpha, 0, overlay)
+                            channel = overlay[:, :, c]
+                            channel[mask] = (
+                                channel[mask] * (1 - alpha) + color[c] * alpha
+                            ).astype(np.uint8)
 
                         contours, _ = cv2.findContours(mask.astype(np.uint8), cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
                         border_color = (255, 255, 0) if is_target else (0, 0, 255) if is_being_looked_at else (255, 255, 255)
@@ -734,10 +742,28 @@ class UltraOptimizedProcessor:
                             status_text = f"{obj_name} looking at {', '.join(looking_at)}"
                         elif is_being_looked_at:
                             status_text = f"{obj_name} looked at by {', '.join(looked_at_by)}"
+                        # place label near mask centroid (fallback to top-left stack)
+                        ys, xs = np.where(mask)
+                        if len(xs) > 0:
+                            cx, cy = int(xs.mean()), int(ys.mean())
+                        else:
+                            cx, cy = 10, 30 + (obj_id * 25) % max(25, height - 30)
+                        (tw, th), baseline = cv2.getTextSize(
+                            status_text, cv2.FONT_HERSHEY_SIMPLEX, 0.6, 2
+                        )
+                        x = max(0, min(cx - tw // 2, width - tw - 2))
+                        y = max(th + 4, min(cy, height - 4))
+                        cv2.rectangle(
+                            overlay,
+                            (x - 2, y - th - 2),
+                            (x + tw + 2, y + baseline + 2),
+                            (0, 0, 0),
+                            -1,
+                        )
                         cv2.putText(
                             overlay,
                             status_text,
-                            (10, 30 + (obj_id * 25) % max(25, height - 30)),
+                            (x, y),
                             cv2.FONT_HERSHEY_SIMPLEX,
                             0.6,
                             (255, 255, 255),
