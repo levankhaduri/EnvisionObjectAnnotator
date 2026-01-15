@@ -5,6 +5,7 @@ from pathlib import Path
 from uuid import uuid4
 import subprocess
 import json
+import cv2
 
 from .schemas import (
     SessionCreate,
@@ -92,6 +93,8 @@ def extract_frames(payload: FrameExtractionRequest):
 
     frames_dir = SESSIONS_DIR / payload.session_id / "frames"
     frames_dir.mkdir(parents=True, exist_ok=True)
+    thumbs_dir = SESSIONS_DIR / payload.session_id / "thumbs"
+    thumbs_dir.mkdir(parents=True, exist_ok=True)
     output_pattern = str(frames_dir / "%05d.jpg")
 
     cmd = [
@@ -110,6 +113,24 @@ def extract_frames(payload: FrameExtractionRequest):
     if result.returncode != 0:
         raise HTTPException(status_code=500, detail=result.stderr.strip() or "Frame extraction failed")
 
+    thumb_pattern = str(thumbs_dir / "%05d.jpg")
+    thumb_cmd = [
+        "ffmpeg",
+        "-y",
+        "-i",
+        session.video_path,
+        "-q:v",
+        "5",
+        "-vf",
+        "scale='min(640,iw)':-1",
+        "-start_number",
+        "0",
+        thumb_pattern,
+    ]
+    thumb_result = subprocess.run(thumb_cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+    if thumb_result.returncode != 0:
+        print(f"[thumbs] generation failed: {thumb_result.stderr.strip()}")
+
     return {"status": "ok", "frames_dir": str(frames_dir)}
 
 
@@ -125,10 +146,22 @@ def list_frames(session_id: str):
         raise HTTPException(status_code=404, detail="Frames not extracted")
 
     frame_files = sorted([p.name for p in frames_dir.glob("*.jpg")])
+    frame_width = None
+    frame_height = None
+    if frame_files:
+        sample_path = frames_dir / frame_files[0]
+        img = cv2.imread(str(sample_path))
+        if img is not None:
+            frame_height, frame_width = img.shape[:2]
+    thumbs_dir = SESSIONS_DIR / session_id / "thumbs"
+    has_thumbs = thumbs_dir.exists() and any(thumbs_dir.glob("*.jpg"))
     return FrameListResponse(
         session_id=session_id,
         frame_count=len(frame_files),
         frame_files=frame_files,
+        frame_width=frame_width,
+        frame_height=frame_height,
+        has_thumbnails=has_thumbs,
     )
 
 
@@ -144,6 +177,22 @@ def get_frame(session_id: str, frame_name: str):
         raise HTTPException(status_code=404, detail="Frame not found")
 
     return FileResponse(frame_path)
+
+
+@app.get("/frames/thumbs/{session_id}/{frame_name}")
+def get_frame_thumb(session_id: str, frame_name: str):
+    try:
+        state.get_session(session_id)
+    except KeyError:
+        raise HTTPException(status_code=404, detail="Session not found")
+
+    thumb_path = SESSIONS_DIR / session_id / "thumbs" / frame_name
+    frame_path = SESSIONS_DIR / session_id / "frames" / frame_name
+    if thumb_path.exists():
+        return FileResponse(thumb_path)
+    if frame_path.exists():
+        return FileResponse(frame_path)
+    raise HTTPException(status_code=404, detail="Frame not found")
 
 
 @app.get("/annotation/frames/{session_id}/{frame_index}")

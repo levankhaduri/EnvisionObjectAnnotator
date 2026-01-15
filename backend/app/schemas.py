@@ -67,3 +67,6 @@ class FrameListResponse(BaseModel):
     session_id: str
     frame_count: int
     frame_files: List[str]
+    frame_width: int | None = None
+    frame_height: int | None = None
+    has_thumbnails: bool = False

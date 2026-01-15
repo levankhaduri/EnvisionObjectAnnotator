@@ -18,6 +18,7 @@ export default function AnnotationPage() {
   const [selectedObject, setSelectedObject] = useState("");
   const [frameObjects, setFrameObjects] = useState({});
   const [savedCounts, setSavedCounts] = useState({});
+  const [videoDims, setVideoDims] = useState(null);
   const [labelMode, setLabelMode] = useState(1);
   const [status, setStatus] = useState("Load a session to begin annotating.");
   const [busy, setBusy] = useState(false);
@@ -40,6 +41,9 @@ export default function AnnotationPage() {
         const data = await listFrames(sessionId);
         setFrames(data.frame_files || []);
         setCurrentIndex(0);
+        if (data.frame_width && data.frame_height) {
+          setVideoDims({ width: data.frame_width, height: data.frame_height });
+        }
         setStatus(data.frame_files?.length ? "Frames ready." : "No frames found.");
       } catch (err) {
         setStatus(err.message);
@@ -54,22 +58,30 @@ export default function AnnotationPage() {
       try {
         const data = await fetchFrameAnnotations(sessionId, currentIndex);
         const objects = data.objects || {};
-        setFrameObjects(objects);
-        setObjectList(Object.keys(objects));
-        const counts = {};
+        const normalized = {};
         Object.entries(objects).forEach(([name, pts]) => {
+          normalized[name] = (pts || []).map((p) => ({
+            ...p,
+            fx: videoDims && videoDims.width ? p.x / videoDims.width : p.fx,
+            fy: videoDims && videoDims.height ? p.y / videoDims.height : p.fy,
+          }));
+        });
+        setFrameObjects(normalized);
+        setObjectList(Object.keys(normalized));
+        const counts = {};
+        Object.entries(normalized).forEach(([name, pts]) => {
           counts[name] = Array.isArray(pts) ? pts.length : 0;
         });
         setSavedCounts(counts);
-        const first = Object.keys(objects)[0] || "";
+        const first = Object.keys(normalized)[0] || "";
         setSelectedObject(first);
-        setPoints(first ? objects[first] : []);
+        setPoints(first ? normalized[first] : []);
       } catch (err) {
         setStatus(err.message);
       }
     }
     hydrateFrame();
-  }, [currentIndex, sessionId]);
+  }, [currentIndex, sessionId, videoDims]);
 
   function handleImageClick(event) {
     if (!imgRef.current || !selectedObject) return;
@@ -78,8 +90,10 @@ export default function AnnotationPage() {
     const y = event.clientY - rect.top;
     const fx = x / rect.width;
     const fy = y / rect.height;
-    const nx = fx * imgRef.current.naturalWidth;
-    const ny = fy * imgRef.current.naturalHeight;
+    const baseW = videoDims?.width || imgRef.current.naturalWidth || 1;
+    const baseH = videoDims?.height || imgRef.current.naturalHeight || 1;
+    const nx = fx * baseW;
+    const ny = fy * baseH;
 
     const next = [
       ...(frameObjects[selectedObject] || []),
@@ -182,7 +196,8 @@ export default function AnnotationPage() {
   if (!hasSavedObject) missingSteps.push("Save points for at least one object.");
 
   const frameName = frames[currentIndex];
-  const frameUrl = sessionId && frameName ? `${API_BASE}/frames/${sessionId}/${frameName}` : "";
+  const frameUrl =
+    sessionId && frameName ? `${API_BASE}/frames/thumbs/${sessionId}/${frameName}` : "";
 
   return (
     <div className="bg-white text-black">
