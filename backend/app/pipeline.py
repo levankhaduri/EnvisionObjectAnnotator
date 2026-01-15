@@ -1,5 +1,6 @@
 import os
 from datetime import datetime
+import traceback
 
 import cv2
 import numpy as np
@@ -12,6 +13,37 @@ os.environ.setdefault("SAM2_OFFLOAD_VIDEO_TO_CPU", "true")
 os.environ.setdefault("SAM2_OFFLOAD_STATE_TO_CPU", "true")
 os.environ.setdefault("PYTORCH_ENABLE_MPS_FALLBACK", "1")
 os.environ.setdefault("CUDA_LAUNCH_BLOCKING", "1")
+
+
+def _format_tensor_info(value):
+    if value is None:
+        return "none"
+    if torch.is_tensor(value):
+        try:
+            return (
+                f"shape={list(value.shape)} dtype={value.dtype} device={value.device} "
+                f"contig={value.is_contiguous()} stride={list(value.stride())} "
+                f"storage_offset={value.storage_offset()}"
+            )
+        except Exception as exc:
+            return f"tensor<unavailable> error={exc}"
+    if isinstance(value, np.ndarray):
+        return f"ndarray shape={list(value.shape)} dtype={value.dtype}"
+    return f"{type(value)}"
+
+
+def _format_points_info(points):
+    if points is None:
+        return "none"
+    try:
+        arr = np.asarray(points)
+        if arr.size == 0:
+            return "empty"
+        mins = arr.min(axis=0)
+        maxs = arr.max(axis=0)
+        return f"shape={list(arr.shape)} min={mins.tolist()} max={maxs.tolist()}"
+    except Exception as exc:
+        return f"unavailable error={exc}"
 
 
 def get_gpu_memory_info():
@@ -405,6 +437,7 @@ class UltraOptimizedProcessor:
         batch_size=50,
         auto_fallback=True,
         preview_callback=None,
+        log_callback=None,
         preview_stride=15,
         preview_max_dim=720,
     ):
@@ -415,6 +448,7 @@ class UltraOptimizedProcessor:
         self.batch_size = batch_size
         self.auto_fallback = auto_fallback
         self.preview_callback = preview_callback
+        self.log_callback = log_callback
         self.preview_stride = max(1, int(preview_stride)) if preview_stride else None
         self.preview_max_dim = int(preview_max_dim)
 
@@ -451,13 +485,38 @@ class UltraOptimizedProcessor:
         self.offload_video_to_cpu = os.environ.get("SAM2_OFFLOAD_VIDEO_TO_CPU", "true") == "true"
         self.offload_state_to_cpu = os.environ.get("SAM2_OFFLOAD_STATE_TO_CPU", "true") == "true"
 
+    def _log(self, message):
+        cb = getattr(self, "log_callback", None)
+        if cb is None:
+            return
+        try:
+            cb(message)
+        except Exception:
+            pass
+
     def process_video_with_memory_management(self, points_dict, labels_dict, object_names, debug=True):
         """Process video with ultra memory management and improved overlap detection."""
         last_exc = None
         try:
+            if debug:
+                self._log(
+                    "processing start: frames=%s objects=%s batch_size=%s offload_video=%s offload_state=%s"
+                    % (
+                        len(self.frame_names),
+                        len(object_names),
+                        self.batch_size,
+                        self.offload_video_to_cpu,
+                        self.offload_state_to_cpu,
+                    )
+                )
             configure_torch_ultra_conservative()
             for attempt in range(3):
                 try:
+                    if debug:
+                        self._log(
+                            "processing attempt %s: batch_size=%s device=%s"
+                            % (attempt + 1, self.batch_size, getattr(self.predictor, "device", "unknown"))
+                        )
                     if attempt == 0:
                         return self._process_standard_optimized(points_dict, labels_dict, object_names, debug)
                     if attempt == 1:
@@ -473,9 +532,15 @@ class UltraOptimizedProcessor:
                         if attempt == 2:
                             raise exc
                     else:
+                        if debug:
+                            self._log("processing attempt failed: %s" % exc)
+                            self._log(traceback.format_exc())
                         raise exc
         except Exception as exc:
             last_exc = exc
+            if debug:
+                self._log("all processing attempts failed: %s" % exc)
+                self._log(traceback.format_exc())
             print(f"❌ All processing attempts failed: {exc}")
             raise
         finally:
@@ -491,6 +556,16 @@ class UltraOptimizedProcessor:
 
         self.predictor.reset_state(inference_state)
         ultra_cleanup_memory()
+        if debug:
+            self._log(
+                "init_state: num_frames=%s video_size=%sx%s image_size=%s"
+                % (
+                    inference_state.get("num_frames"),
+                    inference_state.get("video_width"),
+                    inference_state.get("video_height"),
+                    getattr(self.predictor, "image_size", "unknown"),
+                )
+            )
 
         self.object_names = object_names
         targets_found = False
@@ -512,6 +587,17 @@ class UltraOptimizedProcessor:
                 del out_mask_logits, points, labels
                 ultra_cleanup_memory()
             except Exception as exc:
+                if debug:
+                    self._log(
+                        "add prompts failed: obj_id=%s points=%s labels=%s error=%s"
+                        % (
+                            obj_id,
+                            _format_points_info(points_dict.get(obj_id)),
+                            _format_tensor_info(labels_dict.get(obj_id)),
+                            exc,
+                        )
+                    )
+                    self._log(traceback.format_exc())
                 print(f"  ❌ Error adding prompts for object {obj_id}: {exc}")
                 continue
 
@@ -559,6 +645,17 @@ class UltraOptimizedProcessor:
 
                     del out_mask_logits, frame_results
                 except Exception as exc:
+                    if debug:
+                        self._log(
+                            "frame error: frame_idx=%s obj_ids=%s mask_logits=%s error=%s"
+                            % (
+                                out_frame_idx,
+                                list(out_obj_ids) if out_obj_ids is not None else None,
+                                _format_tensor_info(out_mask_logits),
+                                exc,
+                            )
+                        )
+                        self._log(traceback.format_exc())
                     print(f"  ⚠️ Error processing frame {out_frame_idx}: {exc}")
                     pbar.update(1)
                     ultra_cleanup_memory()
@@ -575,6 +672,8 @@ class UltraOptimizedProcessor:
 
     def _process_cpu_fallback(self, points_dict, labels_dict, object_names, debug):
         print("🚨 Emergency CPU fallback - this will be slow but stable")
+        if debug:
+            self._log("cpu fallback: moving model to cpu")
         if hasattr(self.predictor.model, "to"):
             self.predictor.model = self.predictor.model.to("cpu")
         ultra_cleanup_memory()

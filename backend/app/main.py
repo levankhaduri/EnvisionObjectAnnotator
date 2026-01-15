@@ -181,7 +181,7 @@ def update_config(payload: ConfigUpdate):
 @app.post("/annotation/points")
 def add_annotation_points(payload: AnnotationPayload):
     try:
-        state.get_session(payload.session_id)
+        session = state.get_session(payload.session_id)
     except KeyError:
         raise HTTPException(status_code=404, detail="Session not found")
 
@@ -200,6 +200,10 @@ def add_annotation_points(payload: AnnotationPayload):
         {"x": p.x, "y": p.y, "label": p.label} for p in payload.points
     ]
     frame_file.write_text(json.dumps(existing, indent=2))
+    config = session.config or {}
+    if config.get("reference_frame") != payload.frame_index:
+        updated_config = {**config, "reference_frame": payload.frame_index}
+        state.update_session(payload.session_id, config=updated_config)
 
     return {
         "status": "saved",
@@ -207,6 +211,7 @@ def add_annotation_points(payload: AnnotationPayload):
         "frame": payload.frame_index,
         "object": payload.object_name,
         "path": str(frame_file),
+        "reference_frame": payload.frame_index,
     }
 
 

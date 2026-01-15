@@ -298,6 +298,17 @@ export default function AnnotationPage() {
                     Next Frame
                   </button>
                 </div>
+                <div className="mt-4">
+                  <label className="text-sm text-gray-500 block mb-2">Jump to frame</label>
+                  <input
+                    type="range"
+                    min="0"
+                    max={Math.max(0, frames.length - 1)}
+                    value={currentIndex}
+                    onChange={(event) => setCurrentIndex(Number(event.target.value))}
+                    disabled={frames.length === 0}
+                  />
+                </div>
               </div>
             </div>
 

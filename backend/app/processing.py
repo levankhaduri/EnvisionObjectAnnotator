@@ -200,7 +200,7 @@ class HeadlessProcessor:
             points_dict,
             labels_dict,
             object_names,
-            debug=False,
+            debug=True,
         )
 
     def save_video(self, results, output_path, fps):
@@ -263,16 +263,40 @@ def _load_reference_annotations(session_id, reference_frame):
 
 def run_processing(session_id):
     error_log = SESSIONS_DIR / session_id / "processing_error.log"
+    debug_log = SESSIONS_DIR / session_id / "processing_debug.log"
     started_at = time.perf_counter()
+
+    def _append_log(line):
+        try:
+            debug_log.parent.mkdir(parents=True, exist_ok=True)
+            with debug_log.open("a", encoding="utf-8") as handle:
+                handle.write(line + "\n")
+        except Exception:
+            pass
+
+    def _log_debug(message):
+        stamp = time.strftime("%Y-%m-%d %H:%M:%S")
+        _append_log(f"[{stamp}] {message}")
+
+    def _log_trace():
+        trace = traceback.format_exc().rstrip()
+        if not trace:
+            return
+        for line in trace.splitlines():
+            _append_log(f"    {line}")
+
+    _log_debug(f"run start: session_id={session_id}")
     try:
         session = state.get_session(session_id)
     except KeyError:
         _set_status(session_id, "error", 0.0, "Session not found")
+        _log_debug("session not found")
         return
 
     frames_dir = SESSIONS_DIR / session_id / "frames"
     if not frames_dir.exists():
         _set_status(session_id, "error", 0.0, "Frames not found. Extract frames first.")
+        _log_debug(f"frames not found: {frames_dir}")
         return
 
     preview_dir = SESSIONS_DIR / session_id / "previews"
@@ -300,13 +324,23 @@ def run_processing(session_id):
     frame_count = len(list(frames_dir.glob("*.jpg")))
     gpu_start = get_gpu_memory_info()
     ram_start = _get_ram_info()
+    _log_debug(
+        "config: model_key=%s reference_frame=%s batch_size=%s frames=%s"
+        % (model_key, reference_frame, batch_size, frame_count)
+    )
 
     try:
         _set_status(session_id, "initializing", 0.05, "Loading annotations")
         points_dict, labels_dict, object_names = _load_reference_annotations(session_id, reference_frame)
     except Exception as exc:
         _set_status(session_id, "error", 0.05, f"Annotation error: {exc}")
+        _log_debug(f"annotation error: {exc}")
+        _log_trace()
         return
+    _log_debug(
+        "annotations loaded: objects=%s points=%s"
+        % (len(object_names), sum(len(v) for v in points_dict.values()))
+    )
     annotations_done = time.perf_counter()
 
     try:
@@ -337,6 +371,10 @@ def run_processing(session_id):
                 predictor.model = predictor.model.to(device=device, dtype=torch.float32)
             except Exception:
                 pass
+        _log_debug(
+            "model ready: key=%s label=%s device=%s checkpoint=%s"
+            % (resolved_model_key, model_label, device, checkpoint)
+        )
         processor = UltraOptimizedProcessor(
             predictor,
             str(frames_dir),
@@ -345,6 +383,7 @@ def run_processing(session_id):
             batch_size=batch_size,
             auto_fallback=auto_fallback,
             preview_callback=_save_preview,
+            log_callback=_log_debug,
             preview_stride=1,
             preview_max_dim=720,
         )
@@ -352,10 +391,14 @@ def run_processing(session_id):
     except ImportError as exc:
         error_log.write_text(traceback.format_exc())
         _set_status(session_id, "error", 0.1, f"Missing dependency: {exc}")
+        _log_debug(f"missing dependency: {exc}")
+        _log_trace()
         return
     except Exception as exc:
         error_log.write_text(traceback.format_exc())
         _set_status(session_id, "error", 0.1, f"Model init error: {exc}")
+        _log_debug(f"model init error: {exc}")
+        _log_trace()
         return
     model_done = time.perf_counter()
 
@@ -364,10 +407,13 @@ def run_processing(session_id):
         results = wrapped.process(points_dict, labels_dict, object_names)
         if not results:
             _set_status(session_id, "error", 0.6, "Processing failed")
+            _log_debug("processing failed: no results")
             return
     except Exception as exc:
         error_log.write_text(traceback.format_exc())
         _set_status(session_id, "error", 0.6, f"Processing error: {exc}")
+        _log_debug(f"processing error: {exc}")
+        _log_trace()
         return
     processing_done = time.perf_counter()
 
@@ -416,9 +462,12 @@ def run_processing(session_id):
         updated_config = {**session.config, "outputs": outputs, "profiling": profiling}
         state.update_session(session_id, config=updated_config)
         _set_status(session_id, "completed", 1.0, "Processing complete")
+        _log_debug("processing complete")
     except Exception as exc:
         error_log.write_text(traceback.format_exc())
         _set_status(session_id, "error", 0.9, f"Output error: {exc}")
+        _log_debug(f"output error: {exc}")
+        _log_trace()
     finally:
         state.clear_thread(session_id)
 
