@@ -20,6 +20,16 @@ class ConfigUpdate(BaseModel):
     overlap_threshold: float = 0.1
     batch_size: int = 50
     auto_fallback: bool = True
+    auto_tune: bool = True
+    tuning_target: float = 0.75
+    tuning_reserve_gb: float = 8.0
+    preview_stride: Optional[int] = None
+    max_cache_frames: Optional[int] = None
+    max_cache_cap: Optional[int] = None
+    chunk_size: Optional[int] = None
+    chunk_seconds: Optional[float] = None
+    chunk_overlap: int = 1
+    compress_masks: Optional[bool] = None
     use_mps: bool = False
     model_key: Optional[str] = None
     export_video: bool = True
@@ -67,6 +77,6 @@ class FrameListResponse(BaseModel):
     session_id: str
     frame_count: int
     frame_files: List[str]
-    frame_width: int | None = None
-    frame_height: int | None = None
+    frame_width: Optional[int] = None
+    frame_height: Optional[int] = None
     has_thumbnails: bool = False

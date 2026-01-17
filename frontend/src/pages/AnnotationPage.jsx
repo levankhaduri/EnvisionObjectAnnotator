@@ -19,11 +19,14 @@ export default function AnnotationPage() {
   const [frameObjects, setFrameObjects] = useState({});
   const [savedCounts, setSavedCounts] = useState({});
   const [videoDims, setVideoDims] = useState(null);
+  const [useThumbs, setUseThumbs] = useState(true);
   const [labelMode, setLabelMode] = useState(1);
   const [status, setStatus] = useState("Load a session to begin annotating.");
   const [busy, setBusy] = useState(false);
   const [maskPreviewUrl, setMaskPreviewUrl] = useState("");
   const [showPreview, setShowPreview] = useState(false);
+  const annotationsCache = useRef(new Map());
+  const maskCache = useRef(new Map());
   const imgRef = useRef(null);
   const navigate = useNavigate();
 
@@ -35,6 +38,13 @@ export default function AnnotationPage() {
   }, []);
 
   useEffect(() => {
+    annotationsCache.current.clear();
+    maskCache.current.clear();
+    setVideoDims(null);
+    setUseThumbs(true);
+  }, [sessionId]);
+
+  useEffect(() => {
     async function fetchFrames() {
       if (!sessionId) return;
       try {
@@ -44,6 +54,7 @@ export default function AnnotationPage() {
         if (data.frame_width && data.frame_height) {
           setVideoDims({ width: data.frame_width, height: data.frame_height });
         }
+        setUseThumbs(Boolean(data.has_thumbnails));
         setStatus(data.frame_files?.length ? "Frames ready." : "No frames found.");
       } catch (err) {
         setStatus(err.message);
@@ -56,16 +67,40 @@ export default function AnnotationPage() {
     async function hydrateFrame() {
       if (!sessionId) return;
       try {
+        const cacheKey = `${sessionId}:${currentIndex}`;
+        const normalizeObjects = (objects) => {
+          const normalized = {};
+          Object.entries(objects || {}).forEach(([name, pts]) => {
+            normalized[name] = (pts || []).map((p, idx) => ({
+              ...p,
+              fx: videoDims && videoDims.width ? p.x / videoDims.width : p.fx,
+              fy: videoDims && videoDims.height ? p.y / videoDims.height : p.fy,
+              id: p.id || `${currentIndex}-${name}-${idx}-${p.x}-${p.y}-${p.label}`,
+            }));
+          });
+          return normalized;
+        };
+
+        const cached = annotationsCache.current.get(cacheKey);
+        if (cached) {
+          const normalized = normalizeObjects(cached);
+          setFrameObjects(normalized);
+          setObjectList(Object.keys(normalized));
+          const counts = {};
+          Object.entries(normalized).forEach(([name, pts]) => {
+            counts[name] = Array.isArray(pts) ? pts.length : 0;
+          });
+          setSavedCounts(counts);
+          const first = Object.keys(normalized)[0] || "";
+          setSelectedObject(first);
+          setPoints(first ? normalized[first] : []);
+          return;
+        }
+
         const data = await fetchFrameAnnotations(sessionId, currentIndex);
         const objects = data.objects || {};
-        const normalized = {};
-        Object.entries(objects).forEach(([name, pts]) => {
-          normalized[name] = (pts || []).map((p) => ({
-            ...p,
-            fx: videoDims && videoDims.width ? p.x / videoDims.width : p.fx,
-            fy: videoDims && videoDims.height ? p.y / videoDims.height : p.fy,
-          }));
-        });
+        const normalized = normalizeObjects(objects);
+        annotationsCache.current.set(cacheKey, normalized);
         setFrameObjects(normalized);
         setObjectList(Object.keys(normalized));
         const counts = {};
@@ -82,6 +117,42 @@ export default function AnnotationPage() {
     }
     hydrateFrame();
   }, [currentIndex, sessionId, videoDims]);
+
+  function updateCache(frameIndex, updatedObjects) {
+    if (!sessionId) return;
+    annotationsCache.current.set(`${sessionId}:${frameIndex}`, updatedObjects);
+  }
+
+  function removePoint(pointId) {
+    if (!selectedObject) return;
+    const current = frameObjects[selectedObject] || [];
+    const updatedPoints = current.filter((point) => point.id !== pointId);
+    const updated = { ...frameObjects, [selectedObject]: updatedPoints };
+    setFrameObjects(updated);
+    setPoints(updatedPoints);
+    updateCache(currentIndex, updated);
+    setShowPreview(false);
+    setMaskPreviewUrl("");
+  }
+
+  function undoLastPoint() {
+    if (!selectedObject) return;
+    const current = frameObjects[selectedObject] || [];
+    if (current.length === 0) return;
+    const updatedPoints = current.slice(0, -1);
+    const updated = { ...frameObjects, [selectedObject]: updatedPoints };
+    setFrameObjects(updated);
+    setPoints(updatedPoints);
+    updateCache(currentIndex, updated);
+    setShowPreview(false);
+    setMaskPreviewUrl("");
+  }
+
+  function buildMaskSignature(pointsForObject) {
+    return (pointsForObject || [])
+      .map((p) => `${Math.round(p.x)}:${Math.round(p.y)}:${p.label}`)
+      .join("|");
+  }
 
   function handleImageClick(event) {
     if (!imgRef.current || !selectedObject) return;
@@ -102,6 +173,9 @@ export default function AnnotationPage() {
     const updated = { ...frameObjects, [selectedObject]: next };
     setFrameObjects(updated);
     setPoints(next);
+    updateCache(currentIndex, updated);
+    setShowPreview(false);
+    setMaskPreviewUrl("");
   }
 
   async function handleSavePoints() {
@@ -129,6 +203,7 @@ export default function AnnotationPage() {
         ...prev,
         [selectedObject]: (frameObjects[selectedObject] || []).length,
       }));
+      updateCache(currentIndex, frameObjects);
       setStatus("Points saved.");
     } catch (err) {
       setStatus(err.message);
@@ -146,6 +221,15 @@ export default function AnnotationPage() {
       setStatus("Add at least one point before testing.");
       return;
     }
+    const signature = buildMaskSignature(frameObjects[selectedObject]);
+    const cacheKey = `${sessionId}:${currentIndex}:${selectedObject}:${signature}`;
+    const cached = maskCache.current.get(cacheKey);
+    if (cached) {
+      setMaskPreviewUrl(`${API_BASE}${cached}?t=${Date.now()}`);
+      setShowPreview(true);
+      setStatus("Loaded cached mask preview.");
+      return;
+    }
     try {
       setBusy(true);
       const response = await testMask({
@@ -156,6 +240,7 @@ export default function AnnotationPage() {
       });
       setStatus(response.message || "Mask test complete.");
       if (response.preview_url) {
+        maskCache.current.set(cacheKey, response.preview_url);
         setMaskPreviewUrl(`${API_BASE}${response.preview_url}?t=${Date.now()}`);
         setShowPreview(true);
       }
@@ -184,6 +269,7 @@ export default function AnnotationPage() {
     setSavedCounts((prev) => ({ ...prev, [name]: 0 }));
     setSelectedObject(name);
     setPoints([]);
+    updateCache(currentIndex, updated);
     setObjectName("");
   }
 
@@ -197,7 +283,9 @@ export default function AnnotationPage() {
 
   const frameName = frames[currentIndex];
   const frameUrl =
-    sessionId && frameName ? `${API_BASE}/frames/thumbs/${sessionId}/${frameName}` : "";
+    sessionId && frameName
+      ? `${API_BASE}${useThumbs ? "/frames/thumbs" : "/frames"}/${sessionId}/${frameName}`
+      : "";
 
   return (
     <div className="bg-white text-black">
@@ -221,7 +309,7 @@ export default function AnnotationPage() {
         .object-card.active { border-color: black; background: #f9fafb; }
         .object-card:hover { border-color: #d1d5db; }
         .sticky-objects { position: sticky; top: 110px; align-self: start; }
-        .point-marker { position: absolute; width: 12px; height: 12px; border-radius: 50%; border: 2px solid white; transform: translate(-50%, -50%); pointer-events: none; box-shadow: 0 2px 4px rgba(0,0,0,0.3); }
+        .point-marker { position: absolute; width: 12px; height: 12px; border-radius: 50%; border: 2px solid white; transform: translate(-50%, -50%); pointer-events: auto; cursor: pointer; box-shadow: 0 2px 4px rgba(0,0,0,0.3); }
         .point-marker.positive { background: #22c55e; }
         .point-marker.negative { background: #ef4444; }
         .keyboard-hint { background: #f3f4f6; border: 2px solid #e5e7eb; border-radius: 8px; padding: 8px 12px; font-size: 13px; display: inline-flex; align-items: center; gap: 6px; }
@@ -282,7 +370,17 @@ export default function AnnotationPage() {
                 <h2 className="text-2xl font-bold mb-4">Annotation Canvas</h2>
                 <div className="canvas-container" onClick={handleImageClick}>
                   {frameUrl ? (
-                    <img ref={imgRef} src={frameUrl} alt="Frame" className="w-full h-auto" />
+                    <img
+                      ref={imgRef}
+                      src={frameUrl}
+                      alt="Frame"
+                      className="w-full h-auto"
+                      onError={() => {
+                        if (useThumbs) {
+                          setUseThumbs(false);
+                        }
+                      }}
+                    />
                   ) : (
                     <div className="text-gray-400 p-10">No frame loaded</div>
                   )}
@@ -291,6 +389,11 @@ export default function AnnotationPage() {
                       key={point.id || `${point.x}-${point.y}`}
                       className={`point-marker ${point.label === 1 ? "positive" : "negative"}`}
                       style={{ left: `${(point.fx || 0) * 100}%`, top: `${(point.fy || 0) * 100}%` }}
+                      onClick={(event) => {
+                        event.stopPropagation();
+                        removePoint(point.id);
+                      }}
+                      title="Remove point"
                     />
                   ))}
                 </div>
@@ -356,6 +459,26 @@ export default function AnnotationPage() {
                     </div>
                   ))}
                 </div>
+                {selectedObject && (frameObjects[selectedObject] || []).length > 0 && (
+                  <div className="mt-4">
+                    <div className="text-sm font-semibold mb-2">Points</div>
+                    <div className="max-h-40 overflow-y-auto space-y-2">
+                      {(frameObjects[selectedObject] || []).map((point, idx) => (
+                        <div
+                          key={point.id || `${point.x}-${point.y}-${idx}`}
+                          className="flex items-center justify-between text-xs text-gray-600"
+                        >
+                          <span>
+                            {idx + 1}. {point.label === 1 ? "pos" : "neg"} ({Math.round(point.x)}, {Math.round(point.y)})
+                          </span>
+                          <button className="btn-secondary px-2 py-1" onClick={() => removePoint(point.id)}>
+                            Remove
+                          </button>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
                 <div className="mt-4">
                   <button className="btn-secondary" onClick={handleTestMask} disabled={busy}>Test Mask</button>
                 </div>
@@ -380,6 +503,15 @@ export default function AnnotationPage() {
                   </button>
                   <button className="btn-secondary" onClick={() => setLabelMode(0)}>
                     <i className="fas fa-minus mr-2"></i>Negative Points
+                  </button>
+                </div>
+                <div className="mt-4">
+                  <button
+                    className="btn-secondary w-full"
+                    onClick={undoLastPoint}
+                    disabled={!selectedObject || (frameObjects[selectedObject] || []).length === 0}
+                  >
+                    Undo last point
                   </button>
                 </div>
                 <div className="flex items-center gap-4 mt-4">

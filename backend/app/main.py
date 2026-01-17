@@ -222,7 +222,7 @@ def update_config(payload: ConfigUpdate):
     except KeyError:
         raise HTTPException(status_code=404, detail="Session not found")
 
-    config = payload.model_dump(exclude={"session_id"})
+    config = payload.model_dump(exclude={"session_id"}, exclude_none=True)
     updated_config = {**session.config, **config}
     return state.update_session(payload.session_id, config=updated_config, output_dir=payload.output_dir)
 

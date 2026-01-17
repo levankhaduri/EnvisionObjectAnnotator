@@ -58,9 +58,11 @@ MODEL_CATALOG = [
         "key": "edgetam",
         "label": "EdgeTAM (edgetam)",
         "checkpoint": REPO_DIR / "EdgeTAM" / "checkpoints" / "edgetam.pt",
-        "config": REPO_DIR / "EdgeTAM" / "sam2" / "configs" / "edgetam.yaml",
+        "config": REPO_DIR / "configs" / "edgetam.yaml",
     },
 ]
+
+_IMAGE_PREDICTOR_CACHE = {}
 
 
 def list_available_models():
@@ -123,6 +125,34 @@ def _build_predictor(use_mps=False, model_key=None):
     return predictor, device
 
 
+def _build_image_predictor(use_mps=False, model_key=None):
+    cache_key = (model_key or "auto", bool(use_mps))
+    cached = _IMAGE_PREDICTOR_CACHE.get(cache_key)
+    if cached:
+        return cached
+
+    from sam2.build_sam import build_sam2
+    from sam2.sam2_image_predictor import SAM2ImagePredictor
+
+    configure_torch_ultra_conservative()
+    torch.set_default_dtype(torch.float32)
+    device = setup_device_ultra_optimized()
+    if device.type == "mps" and not use_mps:
+        device = torch.device("cpu")
+
+    entry = _select_model_entry(model_key=model_key)
+    model_cfg, checkpoint = str(entry["config"]), entry["checkpoint"]
+    sam_model = build_sam2(model_cfg, str(checkpoint), device=device)
+    try:
+        sam_model = sam_model.to(device=device, dtype=torch.float32)
+    except Exception:
+        pass
+
+    predictor = SAM2ImagePredictor(sam_model)
+    _IMAGE_PREDICTOR_CACHE[cache_key] = (predictor, device)
+    return predictor, device
+
+
 def _get_ram_info():
     if psutil is None:
         return None
@@ -134,6 +164,148 @@ def _get_ram_info():
     }
 
 
+def _clamp(value, min_value, max_value):
+    return max(min_value, min(value, max_value))
+
+
+def _auto_tune_settings(frame_count, predictor, config, log_cb=None, fps=None):
+    target = float(config.get("tuning_target", 0.75) or 0.75)
+    target = _clamp(target, 0.5, 0.9)
+    reserve_gb = float(config.get("tuning_reserve_gb", 8.0) or 0.0)
+    reserve_gb = max(0.0, reserve_gb)
+    max_cache_override = config.get("max_cache_frames")
+    max_cache_cap = config.get("max_cache_cap")
+    preview_stride_override = config.get("preview_stride")
+    chunk_size = config.get("chunk_size")
+    chunk_seconds = config.get("chunk_seconds")
+    chunk_overlap = config.get("chunk_overlap", 1)
+    compress_masks = config.get("compress_masks")
+
+    cpu_pct = None
+    if psutil is not None:
+        try:
+            cpu_pct = psutil.cpu_percent(interval=0.1)
+        except Exception:
+            cpu_pct = None
+
+    ram_info = _get_ram_info()
+    gpu_info = get_gpu_memory_info()
+
+    image_size = getattr(predictor, "image_size", 1024)
+    bytes_per_frame = int(image_size) * int(image_size) * 3 * 4
+    estimated_video_gb = (bytes_per_frame * frame_count) / 1024**3 if frame_count else 0.0
+
+    max_cache_frames = None
+    if max_cache_override is not None:
+        try:
+            max_cache_frames = int(max_cache_override)
+        except (TypeError, ValueError):
+            max_cache_frames = None
+    elif ram_info is not None and bytes_per_frame > 0:
+        available_gb = max(0.0, ram_info["available_gb"] - reserve_gb)
+        target_bytes = available_gb * 1024**3 * target
+        max_cache_frames = int(target_bytes // bytes_per_frame)
+
+    if max_cache_cap is None and frame_count >= 5000:
+        max_cache_cap = 2048
+    if max_cache_cap is not None:
+        try:
+            max_cache_cap = int(max_cache_cap)
+        except (TypeError, ValueError):
+            max_cache_cap = None
+    if max_cache_cap is not None:
+        if max_cache_frames is None:
+            max_cache_frames = max_cache_cap
+        else:
+            max_cache_frames = min(max_cache_frames, max_cache_cap)
+
+    if max_cache_frames is not None:
+        if max_cache_frames >= frame_count:
+            max_cache_frames = None
+        else:
+            max_cache_frames = max(2, max_cache_frames)
+
+    if chunk_seconds is not None:
+        try:
+            chunk_seconds = float(chunk_seconds)
+        except (TypeError, ValueError):
+            chunk_seconds = None
+    if chunk_seconds and fps and fps > 0:
+        chunk_size = max(1, int(round(fps * chunk_seconds)))
+    if chunk_size is None and frame_count >= 5000:
+        chunk_size = 1000
+    if chunk_size is not None:
+        try:
+            chunk_size = int(chunk_size)
+        except (TypeError, ValueError):
+            chunk_size = None
+    if chunk_overlap is None:
+        chunk_overlap = 1
+    try:
+        chunk_overlap = max(1, int(chunk_overlap))
+    except (TypeError, ValueError):
+        chunk_overlap = 1
+
+    if compress_masks is None:
+        compress_masks = frame_count >= 2000
+
+    if preview_stride_override is not None:
+        try:
+            preview_stride = max(1, int(preview_stride_override))
+        except (TypeError, ValueError):
+            preview_stride = 1
+    else:
+        target_previews = 600
+        preview_stride = max(1, int(frame_count / target_previews)) if frame_count else 1
+
+    gpu_memory_fraction = None
+    if torch.cuda.is_available():
+        gpu_memory_fraction = _clamp(target, 0.4, 0.95)
+
+    if log_cb:
+        log_cb(
+            "auto_tune: target=%.2f reserve_gb=%.1f cpu_pct=%s ram_avail_gb=%s gpu_free_gb=%s "
+            "bytes_per_frame=%s est_video_gb=%.2f max_cache_frames=%s max_cache_cap=%s "
+            "chunk_size=%s chunk_seconds=%s chunk_overlap=%s compress_masks=%s preview_stride=%s "
+            "gpu_mem_fraction=%s"
+            % (
+                target,
+                reserve_gb,
+                cpu_pct if cpu_pct is not None else "n/a",
+                ram_info["available_gb"] if ram_info else "n/a",
+                gpu_info["free_gb"] if gpu_info else "n/a",
+                bytes_per_frame,
+                estimated_video_gb,
+                max_cache_frames if max_cache_frames is not None else "full",
+                max_cache_cap if max_cache_cap is not None else "n/a",
+                chunk_size if chunk_size is not None else "off",
+                chunk_seconds if chunk_seconds is not None else "n/a",
+                chunk_overlap,
+                compress_masks,
+                preview_stride,
+                gpu_memory_fraction if gpu_memory_fraction is not None else "n/a",
+            )
+        )
+
+    return {
+        "target": target,
+        "reserve_gb": reserve_gb,
+        "cpu_pct": cpu_pct,
+        "ram_info": ram_info,
+        "gpu_info": gpu_info,
+        "bytes_per_frame": bytes_per_frame,
+        "estimated_video_gb": estimated_video_gb,
+        "max_cache_frames": max_cache_frames,
+        "max_cache_cap": max_cache_cap,
+        "chunk_size": chunk_size,
+        "chunk_seconds": chunk_seconds,
+        "chunk_overlap": chunk_overlap,
+        "compress_masks": compress_masks,
+        "preview_stride": preview_stride,
+        "gpu_memory_fraction": gpu_memory_fraction,
+    }
+
+
 def test_mask_preview(session_id, frame_index, object_name, points):
     session = state.get_session(session_id)
     frames_dir = SESSIONS_DIR / session_id / "frames"
@@ -142,37 +314,29 @@ def test_mask_preview(session_id, frame_index, object_name, points):
 
     use_mps = bool((session.config or {}).get("use_mps", False))
     model_key = (session.config or {}).get("model_key") or "auto"
-    predictor, _ = _build_predictor(use_mps=use_mps, model_key=model_key)
-
-    inference_state = predictor.init_state(
-        video_path=str(frames_dir),
-        offload_video_to_cpu=True,
-        offload_state_to_cpu=True,
-        async_loading_frames=True,
-    )
-    predictor.reset_state(inference_state)
+    predictor, _ = _build_image_predictor(use_mps=use_mps, model_key=model_key)
 
     points_arr = np.array([[p["x"], p["y"]] for p in points], dtype=np.float32)
     labels_arr = np.array([p["label"] for p in points], dtype=np.int32)
     if points_arr.size == 0:
         raise ValueError("No points provided")
 
-    _, _, out_mask_logits = predictor.add_new_points_or_box(
-        inference_state=inference_state,
-        frame_idx=frame_index,
-        obj_id=1,
-        points=points_arr,
-        labels=labels_arr,
-    )
-
-    mask = (out_mask_logits[0] > 0.0).cpu().numpy()
-    if len(mask.shape) == 3:
-        mask = mask[0]
-
     frame_path = frames_dir / f"{frame_index:05d}.jpg"
     frame = cv2.imread(str(frame_path))
     if frame is None:
         raise FileNotFoundError("Frame not found")
+
+    rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+    predictor.set_image(rgb_frame)
+    masks, _, _ = predictor.predict(
+        point_coords=points_arr,
+        point_labels=labels_arr,
+        multimask_output=False,
+        return_logits=True,
+        normalize_coords=True,
+    )
+
+    mask = masks[0] > 0.0
 
     overlay = frame.copy()
     color = np.array([34, 197, 94], dtype=np.uint8)
@@ -187,7 +351,6 @@ def test_mask_preview(session_id, frame_index, object_name, points):
     preview_path = preview_dir / f"test_mask_{frame_index:05d}_{safe_name}.png"
     cv2.imwrite(str(preview_path), overlay)
 
-    predictor.reset_state(inference_state)
     return preview_path
 
 
@@ -203,13 +366,17 @@ class HeadlessProcessor:
             debug=True,
         )
 
-    def save_video(self, results, output_path, fps):
+    def get_partial_results(self):
+        return self._processor.get_partial_results()
+
+    def save_video(self, results, output_path, fps, frame_limit=None):
         return self._processor.save_results_video_with_enhanced_annotations(
             results,
             output_path,
             fps=fps,
             show_original=True,
             alpha=0.5,
+            frame_limit=frame_limit,
         )
 
     def save_elan(self, video_path, output_path, fps):
@@ -313,6 +480,14 @@ def run_processing(session_id):
     overlap_threshold = float(config.get("overlap_threshold", 0.1))
     batch_size = int(config.get("batch_size", 50))
     auto_fallback = bool(config.get("auto_fallback", True))
+    auto_tune = bool(config.get("auto_tune", True))
+    auto_tune_info = None
+    fps = None
+    if session.video_path:
+        try:
+            fps, _ = get_video_fps(session.video_path)
+        except Exception:
+            fps = None
     export_video = bool(config.get("export_video", True))
     export_elan = bool(config.get("export_elan", True))
     export_csv = bool(config.get("export_csv", True))
@@ -375,6 +550,22 @@ def run_processing(session_id):
             "model ready: key=%s label=%s device=%s checkpoint=%s"
             % (resolved_model_key, model_label, device, checkpoint)
         )
+
+        if auto_tune:
+            auto_tune_info = _auto_tune_settings(
+                frame_count=frame_count,
+                predictor=predictor,
+                config=config,
+                log_cb=_log_debug,
+                fps=fps,
+            )
+        preview_stride = auto_tune_info["preview_stride"] if auto_tune_info else 1
+        max_cache_frames = auto_tune_info["max_cache_frames"] if auto_tune_info else None
+        gpu_memory_fraction = auto_tune_info["gpu_memory_fraction"] if auto_tune_info else None
+        chunk_size = auto_tune_info["chunk_size"] if auto_tune_info else config.get("chunk_size")
+        chunk_overlap = auto_tune_info["chunk_overlap"] if auto_tune_info else config.get("chunk_overlap", 1)
+        compress_masks = auto_tune_info["compress_masks"] if auto_tune_info else config.get("compress_masks")
+
         processor = UltraOptimizedProcessor(
             predictor,
             str(frames_dir),
@@ -384,8 +575,13 @@ def run_processing(session_id):
             auto_fallback=auto_fallback,
             preview_callback=_save_preview,
             log_callback=_log_debug,
-            preview_stride=1,
+            preview_stride=preview_stride,
             preview_max_dim=720,
+            max_cache_frames=max_cache_frames,
+            gpu_memory_fraction=gpu_memory_fraction,
+            chunk_size=chunk_size,
+            chunk_overlap=chunk_overlap,
+            compress_masks=compress_masks,
         )
         wrapped = HeadlessProcessor(processor)
     except ImportError as exc:
@@ -402,6 +598,30 @@ def run_processing(session_id):
         return
     model_done = time.perf_counter()
 
+    processing_done = None
+
+    def _write_outputs(results_to_save, suffix="", frame_limit=None):
+        output_dir = Path(session.output_dir) if session.output_dir else Path(session.video_path).parent
+        output_dir.mkdir(parents=True, exist_ok=True)
+        video_stem = Path(session.video_path).stem
+        fps, _ = get_video_fps(session.video_path)
+
+        outputs = {}
+        if export_video:
+            video_path = output_dir / f"{video_stem}{suffix}_ANNOTATED.mp4"
+            wrapped.save_video(results_to_save, str(video_path), fps=fps, frame_limit=frame_limit)
+            outputs["annotated_video"] = str(video_path)
+        if export_elan:
+            elan_path = output_dir / f"{video_stem}{suffix}_ELAN_TIMELINE.eaf"
+            wrapped.save_elan(session.video_path, str(elan_path), fps=fps)
+            outputs["elan"] = str(elan_path)
+        if export_csv:
+            csv_path = output_dir / f"{video_stem}{suffix}_FRAME_BY_FRAME.csv"
+            wrapped.save_csv(results_to_save, object_names, str(csv_path))
+            outputs["csv"] = str(csv_path)
+
+        return outputs
+
     try:
         _set_status(session_id, "processing", 0.2, "Processing frames")
         results = wrapped.process(points_dict, labels_dict, object_names)
@@ -411,32 +631,60 @@ def run_processing(session_id):
             return
     except Exception as exc:
         error_log.write_text(traceback.format_exc())
-        _set_status(session_id, "error", 0.6, f"Processing error: {exc}")
         _log_debug(f"processing error: {exc}")
         _log_trace()
+
+        partial_results = {}
+        try:
+            partial_results = wrapped.get_partial_results() or {}
+        except Exception:
+            partial_results = {}
+
+        if partial_results:
+            _set_status(session_id, "saving", 0.85, "Writing partial outputs")
+            try:
+                frame_limit = max(partial_results.keys()) if partial_results else None
+                outputs = _write_outputs(partial_results, suffix="_PARTIAL", frame_limit=frame_limit)
+                failed_at = time.perf_counter()
+                processing_seconds = max(failed_at - model_done, 1e-6)
+                profiling = {
+                    "model_key": resolved_model_key,
+                    "model_label": model_label,
+                    "device": str(device),
+                    "frames_total": frame_count,
+                    "frames_processed": len(partial_results),
+                    "objects_total": len(object_names),
+                    "processing_fps": len(partial_results) / processing_seconds,
+                    "auto_tune": auto_tune_info,
+                    "partial": True,
+                    "error": str(exc),
+                    "timings_s": {
+                        "load_annotations": annotations_done - started_at,
+                        "model_init": model_done - annotations_done,
+                        "processing": failed_at - model_done,
+                        "total": failed_at - started_at,
+                    },
+                    "gpu_mem_start": gpu_start,
+                    "gpu_mem_end": get_gpu_memory_info(),
+                    "ram_start": ram_start,
+                    "ram_end": _get_ram_info(),
+                }
+                updated_config = {**session.config, "outputs": outputs, "profiling": profiling}
+                state.update_session(session_id, config=updated_config)
+                _set_status(session_id, "error", 0.9, "Processing failed; partial outputs saved")
+            except Exception as save_exc:
+                error_log.write_text(traceback.format_exc())
+                _set_status(session_id, "error", 0.9, f"Output error: {save_exc}")
+                _log_debug(f"output error: {save_exc}")
+                _log_trace()
+        else:
+            _set_status(session_id, "error", 0.6, f"Processing error: {exc}")
         return
     processing_done = time.perf_counter()
 
     try:
         _set_status(session_id, "saving", 0.85, "Writing outputs")
-        output_dir = Path(session.output_dir) if session.output_dir else Path(session.video_path).parent
-        output_dir.mkdir(parents=True, exist_ok=True)
-        video_stem = Path(session.video_path).stem
-        fps, _ = get_video_fps(session.video_path)
-
-        outputs = {}
-        if export_video:
-            video_path = output_dir / f"{video_stem}_ANNOTATED.mp4"
-            wrapped.save_video(results, str(video_path), fps=fps)
-            outputs["annotated_video"] = str(video_path)
-        if export_elan:
-            elan_path = output_dir / f"{video_stem}_ELAN_TIMELINE.eaf"
-            wrapped.save_elan(session.video_path, str(elan_path), fps=fps)
-            outputs["elan"] = str(elan_path)
-        if export_csv:
-            csv_path = output_dir / f"{video_stem}_FRAME_BY_FRAME.csv"
-            wrapped.save_csv(results, object_names, str(csv_path))
-            outputs["csv"] = str(csv_path)
+        outputs = _write_outputs(results)
 
         finished_at = time.perf_counter()
         processing_seconds = max(processing_done - model_done, 1e-6)
@@ -447,6 +695,7 @@ def run_processing(session_id):
             "frames_total": frame_count,
             "objects_total": len(object_names),
             "processing_fps": frame_count / processing_seconds,
+            "auto_tune": auto_tune_info,
             "timings_s": {
                 "load_annotations": annotations_done - started_at,
                 "model_init": model_done - annotations_done,

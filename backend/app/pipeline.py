@@ -1,4 +1,4 @@
-import os
+﻿import os
 from datetime import datetime
 import traceback
 
@@ -100,7 +100,7 @@ def setup_device_ultra_optimized():
             f"Initial GPU Memory: {gpu_info['allocated_gb']:.1f}GB allocated, {gpu_info['free_gb']:.1f}GB free"
         )
         if gpu_info["total_gb"] < 8:
-            print("⚠️ WARNING: Low GPU memory detected. Using conservative settings.")
+            print("WARNING: Low GPU memory detected. Using conservative settings.")
             torch.cuda.set_per_process_memory_fraction(0.60)
     elif torch.backends.mps.is_available():
         device = torch.device("mps")
@@ -108,7 +108,7 @@ def setup_device_ultra_optimized():
         torch.set_default_dtype(torch.float32)
     else:
         device = torch.device("cpu")
-        print("⚠️ Using CPU - this will be slow but stable")
+        print("Using CPU - this will be slow but stable")
 
     print(f"Using device: {device}")
     return device
@@ -133,7 +133,7 @@ class EnhancedOverlapDetector:
     def calculate_detailed_overlap(self, mask1, mask2):
         """Enhanced overlap detection with both pixel overlap and spatial containment."""
         if mask1.shape != mask2.shape:
-            print(f"❌ Shape mismatch: {mask1.shape} vs {mask2.shape}")
+            print(f"Shape mismatch: {mask1.shape} vs {mask2.shape}")
             return None
 
         if len(mask1.shape) > 2:
@@ -207,7 +207,7 @@ class EnhancedOverlapDetector:
                             spatial_relationship = True
                             containment_type = "object1_centroid_inside_object2"
         except Exception as exc:
-            print(f"    ⚠️ Error in spatial containment detection: {exc}")
+            print(f"    Error in spatial containment detection: {exc}")
             spatial_relationship = False
 
         has_meaningful_pixel_overlap = intersection_area > 0 and max_overlap >= self.overlap_threshold
@@ -352,13 +352,13 @@ class ImprovedTargetOverlapTracker:
                                     }
                                 )
                     except Exception as exc:
-                        print(f"      ⚠️ Error checking {obj_name}: {exc}")
+                        print(f"      Error checking {obj_name}: {exc}")
                         continue
 
                 if looking_at_objects:
                     frame_analysis["target_overlaps"][target_id] = looking_at_objects
         except Exception as exc:
-            print(f"  ⚠️ Error in analyze_frame_overlaps: {exc}")
+            print(f"  Error in analyze_frame_overlaps: {exc}")
         return frame_analysis
 
     def track_frame_overlaps_batch(self, frame_idx, frame_results, object_names):
@@ -380,7 +380,7 @@ class ImprovedTargetOverlapTracker:
 
             return frame_analysis
         except Exception as exc:
-            print(f"  ⚠️ Error in track_frame_overlaps_batch for frame {frame_idx}: {exc}")
+            print(f"  Error in track_frame_overlaps_batch for frame {frame_idx}: {exc}")
             return {
                 "target_overlaps": {},
                 "object_relationships": {},
@@ -440,6 +440,11 @@ class UltraOptimizedProcessor:
         log_callback=None,
         preview_stride=15,
         preview_max_dim=720,
+        max_cache_frames=None,
+        gpu_memory_fraction=None,
+        chunk_size=None,
+        chunk_overlap=1,
+        compress_masks=None,
     ):
         self.predictor = predictor
         self.video_dir = video_dir
@@ -451,8 +456,14 @@ class UltraOptimizedProcessor:
         self.log_callback = log_callback
         self.preview_stride = max(1, int(preview_stride)) if preview_stride else None
         self.preview_max_dim = int(preview_max_dim)
+        self.max_cache_frames = max_cache_frames
+        self.gpu_memory_fraction = gpu_memory_fraction
+        self.chunk_size = chunk_size
+        self.chunk_overlap = chunk_overlap
+        self.compress_masks = compress_masks
 
         self.overlap_tracker = ImprovedTargetOverlapTracker(overlap_threshold)
+        self.partial_results = {}
 
         self.frame_names = sorted(
             [
@@ -485,6 +496,35 @@ class UltraOptimizedProcessor:
         self.offload_video_to_cpu = os.environ.get("SAM2_OFFLOAD_VIDEO_TO_CPU", "true") == "true"
         self.offload_state_to_cpu = os.environ.get("SAM2_OFFLOAD_STATE_TO_CPU", "true") == "true"
 
+    def _compress_mask(self, mask):
+        if not self.compress_masks:
+            return mask
+        if mask is None:
+            return None
+        if isinstance(mask, dict) and mask.get("_packed"):
+            return mask
+        m = mask[0] if hasattr(mask, "shape") and len(mask.shape) == 3 else mask
+        m = np.asarray(m).astype(np.uint8)
+        flat = m.reshape(-1)
+        packed = np.packbits(flat)
+        return {
+            "_packed": True,
+            "shape": tuple(m.shape),
+            "size": int(m.size),
+            "data": packed,
+        }
+
+    def _decompress_mask(self, mask):
+        if not (isinstance(mask, dict) and mask.get("_packed")):
+            return mask
+        shape = tuple(mask.get("shape") or ())
+        size = int(mask.get("size") or 0)
+        data = mask.get("data")
+        if data is None or not shape or size <= 0:
+            return None
+        flat = np.unpackbits(data)[:size]
+        return flat.reshape(shape).astype(bool)
+
     def _log(self, message):
         cb = getattr(self, "log_callback", None)
         if cb is None:
@@ -494,9 +534,13 @@ class UltraOptimizedProcessor:
         except Exception:
             pass
 
+    def get_partial_results(self):
+        return self.partial_results or {}
+
     def process_video_with_memory_management(self, points_dict, labels_dict, object_names, debug=True):
         """Process video with ultra memory management and improved overlap detection."""
         last_exc = None
+        self.partial_results = {}
         try:
             if debug:
                 self._log(
@@ -510,6 +554,8 @@ class UltraOptimizedProcessor:
                     )
                 )
             configure_torch_ultra_conservative()
+            if self.gpu_memory_fraction is not None and torch.cuda.is_available():
+                torch.cuda.set_per_process_memory_fraction(self.gpu_memory_fraction)
             for attempt in range(3):
                 try:
                     if debug:
@@ -541,29 +587,45 @@ class UltraOptimizedProcessor:
             if debug:
                 self._log("all processing attempts failed: %s" % exc)
                 self._log(traceback.format_exc())
-            print(f"❌ All processing attempts failed: {exc}")
+            print(f"All processing attempts failed: {exc}")
             raise
         finally:
             ultra_cleanup_memory()
 
     def _process_standard_optimized(self, points_dict, labels_dict, object_names, debug):
+        image_size = getattr(self.predictor, "image_size", 1024)
+        bytes_per_frame = image_size * image_size * 3 * 4
+        estimated_bytes = bytes_per_frame * len(self.frame_names)
+        max_preload_bytes = 2 * 1024**3
+        max_cache_frames = self.max_cache_frames
+        if max_cache_frames is not None and max_cache_frames <= 0:
+            max_cache_frames = 1
+        if max_cache_frames is not None and max_cache_frames >= len(self.frame_names):
+            max_cache_frames = None
+        if max_cache_frames is None:
+            max_cache_frames = 8 if estimated_bytes > max_preload_bytes else None
+        async_loading_frames = max_cache_frames is None
         inference_state = self.predictor.init_state(
             video_path=self.video_dir,
             offload_video_to_cpu=self.offload_video_to_cpu,
             offload_state_to_cpu=self.offload_state_to_cpu,
-            async_loading_frames=True,
+            async_loading_frames=async_loading_frames,
+            max_cache_frames=max_cache_frames,
         )
 
         self.predictor.reset_state(inference_state)
         ultra_cleanup_memory()
         if debug:
             self._log(
-                "init_state: num_frames=%s video_size=%sx%s image_size=%s"
+                "init_state: num_frames=%s video_size=%sx%s image_size=%s async_loading_frames=%s max_cache_frames=%s estimated_video_gb=%.2f"
                 % (
                     inference_state.get("num_frames"),
                     inference_state.get("video_width"),
                     inference_state.get("video_height"),
-                    getattr(self.predictor, "image_size", "unknown"),
+                    image_size,
+                    async_loading_frames,
+                    max_cache_frames,
+                    estimated_bytes / (1024**3),
                 )
             )
 
@@ -573,42 +635,47 @@ class UltraOptimizedProcessor:
             if self.overlap_tracker.register_target(obj_id, obj_name):
                 targets_found = True
 
-        for obj_id in points_dict:
-            try:
-                points = np.array(points_dict[obj_id], dtype=np.float32)
-                labels = np.array(labels_dict[obj_id], dtype=np.int32)
-                _, out_obj_ids, out_mask_logits = self.predictor.add_new_points_or_box(
-                    inference_state=inference_state,
-                    frame_idx=self.reference_frame,
-                    obj_id=obj_id,
-                    points=points,
-                    labels=labels,
-                )
-                del out_mask_logits, points, labels
-                ultra_cleanup_memory()
-            except Exception as exc:
-                if debug:
-                    self._log(
-                        "add prompts failed: obj_id=%s points=%s labels=%s error=%s"
-                        % (
-                            obj_id,
-                            _format_points_info(points_dict.get(obj_id)),
-                            _format_tensor_info(labels_dict.get(obj_id)),
-                            exc,
-                        )
-                    )
-                    self._log(traceback.format_exc())
-                print(f"  ❌ Error adding prompts for object {obj_id}: {exc}")
-                continue
-
         results = {}
+        self.partial_results = results
         frame_analyses = {}
         frame_count = 0
         overlap_count = 0
         last_memory_check = 0
 
-        with tqdm(total=len(self.frame_names), desc="Processing frames") as pbar:
-            for out_frame_idx, out_obj_ids, out_mask_logits in self.predictor.propagate_in_video(inference_state):
+        start_frame = max(0, min(self.reference_frame, len(self.frame_names) - 1))
+        total_to_process = max(0, len(self.frame_names) - start_frame)
+        chunk_size = None
+        if self.chunk_size is not None:
+            try:
+                chunk_size = int(self.chunk_size)
+            except (TypeError, ValueError):
+                chunk_size = None
+        if chunk_size is not None and chunk_size <= 0:
+            chunk_size = None
+        if chunk_size is not None and chunk_size >= total_to_process:
+            chunk_size = None
+        chunk_overlap = self.chunk_overlap if self.chunk_overlap is not None else 1
+        try:
+            chunk_overlap = max(1, int(chunk_overlap))
+        except (TypeError, ValueError):
+            chunk_overlap = 1
+
+        def _process_frames(
+            inference_state,
+            start_frame_idx,
+            max_frame_num_to_track,
+            skip_until,
+        ):
+            nonlocal frame_count, last_memory_check, overlap_count
+            last_masks = {}
+            last_processed = None
+            for out_frame_idx, out_obj_ids, out_mask_logits in self.predictor.propagate_in_video(
+                inference_state,
+                start_frame_idx=start_frame_idx,
+                max_frame_num_to_track=max_frame_num_to_track,
+            ):
+                if out_frame_idx < skip_until:
+                    continue
                 try:
                     if frame_count - last_memory_check >= 50:
                         gpu_info = get_gpu_memory_info()
@@ -622,9 +689,15 @@ class UltraOptimizedProcessor:
                         if len(mask.shape) == 3:
                             mask = mask[0]
                         frame_results[out_obj_id] = mask.copy()
+                        last_masks[out_obj_id] = mask.copy()
                         del mask
 
-                    results[out_frame_idx] = frame_results
+                    if self.compress_masks:
+                        results[out_frame_idx] = {
+                            obj_id: self._compress_mask(mask) for obj_id, mask in frame_results.items()
+                        }
+                    else:
+                        results[out_frame_idx] = frame_results
 
                     if targets_found:
                         frame_analysis = self.overlap_tracker.track_frame_overlaps_batch(
@@ -643,6 +716,7 @@ class UltraOptimizedProcessor:
                     if frame_count % 25 == 0:
                         ultra_cleanup_memory()
 
+                    last_processed = out_frame_idx
                     del out_mask_logits, frame_results
                 except Exception as exc:
                     if debug:
@@ -656,22 +730,144 @@ class UltraOptimizedProcessor:
                             )
                         )
                         self._log(traceback.format_exc())
-                    print(f"  ⚠️ Error processing frame {out_frame_idx}: {exc}")
+                    print(f"  Error processing frame {out_frame_idx}: {exc}")
                     pbar.update(1)
                     ultra_cleanup_memory()
                     continue
+            return last_processed, last_masks
+
+        with tqdm(total=total_to_process, desc="Processing frames") as pbar:
+            if chunk_size is None:
+                for obj_id in points_dict:
+                    try:
+                        points = np.array(points_dict[obj_id], dtype=np.float32)
+                        labels = np.array(labels_dict[obj_id], dtype=np.int32)
+                        _, out_obj_ids, out_mask_logits = self.predictor.add_new_points_or_box(
+                            inference_state=inference_state,
+                            frame_idx=start_frame,
+                            obj_id=obj_id,
+                            points=points,
+                            labels=labels,
+                        )
+                        del out_mask_logits, points, labels
+                        ultra_cleanup_memory()
+                    except Exception as exc:
+                        if debug:
+                            self._log(
+                                "add prompts failed: obj_id=%s points=%s labels=%s error=%s"
+                                % (
+                                    obj_id,
+                                    _format_points_info(points_dict.get(obj_id)),
+                                    _format_tensor_info(labels_dict.get(obj_id)),
+                                    exc,
+                                )
+                            )
+                            self._log(traceback.format_exc())
+                        print(f"  Error adding prompts for object {obj_id}: {exc}")
+                        continue
+                last_processed, _ = _process_frames(
+                    inference_state,
+                    start_frame,
+                    total_to_process - 1 if total_to_process > 0 else 0,
+                    start_frame,
+                )
+                if last_processed is None:
+                    ultra_cleanup_memory()
+            else:
+                if debug:
+                    self._log("chunking enabled: chunk_size=%s chunk_overlap=%s" % (chunk_size, chunk_overlap))
+                next_start = start_frame
+                seed_masks = None
+                chunk_index = 0
+                while next_start < len(self.frame_names):
+                    if chunk_index > 0:
+                        inference_state = self.predictor.init_state(
+                            video_path=self.video_dir,
+                            offload_video_to_cpu=self.offload_video_to_cpu,
+                            offload_state_to_cpu=self.offload_state_to_cpu,
+                            async_loading_frames=async_loading_frames,
+                            max_cache_frames=max_cache_frames,
+                        )
+                        self.predictor.reset_state(inference_state)
+                        ultra_cleanup_memory()
+                    seed_frame = start_frame if chunk_index == 0 else max(start_frame, next_start - chunk_overlap)
+                    if chunk_index == 0:
+                        for obj_id in points_dict:
+                            try:
+                                points = np.array(points_dict[obj_id], dtype=np.float32)
+                                labels = np.array(labels_dict[obj_id], dtype=np.int32)
+                                _, out_obj_ids, out_mask_logits = self.predictor.add_new_points_or_box(
+                                    inference_state=inference_state,
+                                    frame_idx=seed_frame,
+                                    obj_id=obj_id,
+                                    points=points,
+                                    labels=labels,
+                                )
+                                del out_mask_logits, points, labels
+                                ultra_cleanup_memory()
+                            except Exception as exc:
+                                if debug:
+                                    self._log(
+                                        "add prompts failed: obj_id=%s points=%s labels=%s error=%s"
+                                        % (
+                                            obj_id,
+                                            _format_points_info(points_dict.get(obj_id)),
+                                            _format_tensor_info(labels_dict.get(obj_id)),
+                                            exc,
+                                        )
+                                    )
+                                    self._log(traceback.format_exc())
+                                print(f"  Error adding prompts for object {obj_id}: {exc}")
+                                continue
+                    else:
+                        for obj_id, mask in (seed_masks or {}).items():
+                            if mask is None:
+                                continue
+                            try:
+                                self.predictor.add_new_mask(
+                                    inference_state=inference_state,
+                                    frame_idx=seed_frame,
+                                    obj_id=obj_id,
+                                    mask=mask,
+                                )
+                            except Exception as exc:
+                                if debug:
+                                    self._log("seed mask failed: obj_id=%s error=%s" % (obj_id, exc))
+                                    self._log(traceback.format_exc())
+                                continue
+
+                    remaining = len(self.frame_names) - next_start
+                    desired_new = min(chunk_size, remaining)
+                    if chunk_index == 0:
+                        max_track = max(0, desired_new - 1)
+                    else:
+                        max_track = max(0, desired_new + chunk_overlap - 1)
+
+                    last_processed, seed_masks = _process_frames(
+                        inference_state,
+                        seed_frame,
+                        max_track,
+                        next_start,
+                    )
+                    self.predictor.reset_state(inference_state)
+                    ultra_cleanup_memory()
+                    if last_processed is None:
+                        break
+                    next_start = last_processed + 1
+                    chunk_index += 1
 
         if targets_found:
             last_frame = max(results.keys()) if results else 0
             self.overlap_tracker.finalize_tracking(last_frame)
 
         self.frame_analyses = frame_analyses
-        self.predictor.reset_state(inference_state)
-        ultra_cleanup_memory()
+        if chunk_size is None:
+            self.predictor.reset_state(inference_state)
+            ultra_cleanup_memory()
         return results
 
     def _process_cpu_fallback(self, points_dict, labels_dict, object_names, debug):
-        print("🚨 Emergency CPU fallback - this will be slow but stable")
+        print("Emergency CPU fallback - this will be slow but stable")
         if debug:
             self._log("cpu fallback: moving model to cpu")
         if hasattr(self.predictor.model, "to"):
@@ -733,7 +929,9 @@ class UltraOptimizedProcessor:
         except Exception as exc:
             print(f"[preview] skipped: {exc}")
 
-    def save_results_video_with_enhanced_annotations(self, results, output_path, fps=30, show_original=True, alpha=0.5):
+    def save_results_video_with_enhanced_annotations(
+        self, results, output_path, fps=30, show_original=True, alpha=0.5, frame_limit=None
+    ):
         """Save results video with enhanced visual feedback for looking-at events."""
         if not results:
             print("No results to save!")
@@ -748,7 +946,7 @@ class UltraOptimizedProcessor:
             fourcc = cv2.VideoWriter_fourcc(*codec)
             out = cv2.VideoWriter(output_path, fourcc, fps, (int(out_width), int(height)))
             if out.isOpened():
-                print(f"✅ VideoWriter initialized with codec {codec}")
+                print(f"VideoWriter initialized with codec {codec}")
                 break
         if out is None or not out.isOpened():
             raise RuntimeError("Failed to initialize video writer (check codec support).")
@@ -756,7 +954,16 @@ class UltraOptimizedProcessor:
         cmap = plt.get_cmap("tab10")
         overlap_frame_count = 0
 
-        for frame_idx in tqdm(range(len(self.frame_names)), desc="Saving frames"):
+        max_frame = len(self.frame_names) - 1
+        if frame_limit is not None:
+            try:
+                frame_limit = int(frame_limit)
+            except (TypeError, ValueError):
+                frame_limit = None
+        if frame_limit is not None:
+            max_frame = min(max_frame, max(0, frame_limit))
+
+        for frame_idx in tqdm(range(max_frame + 1), desc="Saving frames"):
             frame = cv2.imread(os.path.join(self.video_dir, self.frame_names[frame_idx]))
             if frame is None:
                 continue
@@ -800,6 +1007,9 @@ class UltraOptimizedProcessor:
 
             if frame_idx in results:
                 for obj_id, mask in results[frame_idx].items():
+                    mask = self._decompress_mask(mask)
+                    if mask is None:
+                        continue
                     if len(mask.shape) == 3:
                         mask = mask[0]
 
@@ -1047,6 +1257,9 @@ class UltraOptimizedProcessor:
 
                 for obj_id, mask in frame_results.items():
                     obj_name = object_names.get(obj_id, f"Object_{obj_id}")
+                    mask = self._decompress_mask(mask)
+                    if mask is None:
+                        continue
                     if hasattr(mask, "shape") and len(mask.shape) == 3:
                         mask = mask.squeeze()
 
@@ -1079,4 +1292,4 @@ class UltraOptimizedProcessor:
                     )
                     writer.writerow(row)
 
-        print(f"📄 CSV exported: {csv_path}")
+        print(f"CSV exported: {csv_path}")
