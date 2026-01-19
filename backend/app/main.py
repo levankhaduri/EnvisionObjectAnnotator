@@ -7,6 +7,7 @@ import subprocess
 import json
 import cv2
 import math
+import mimetypes
 
 from .schemas import (
     SessionCreate,
@@ -431,4 +432,6 @@ def download_result(session_id: str, kind: str):
     if not file_path.exists():
         raise HTTPException(status_code=404, detail="File missing on disk")
 
-    return FileResponse(file_path)
+    media_type = mimetypes.guess_type(str(file_path))[0] or "application/octet-stream"
+    headers = {"Content-Disposition": f'attachment; filename="{file_path.name}"'}
+    return FileResponse(file_path, media_type=media_type, headers=headers)

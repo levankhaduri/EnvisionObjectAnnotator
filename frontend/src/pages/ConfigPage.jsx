@@ -29,6 +29,8 @@ export default function ConfigPage() {
   const [roiMargin, setRoiMargin] = useState(0.15);
   const [roiMinSize, setRoiMinSize] = useState(256);
   const [roiMaxCoverage, setRoiMaxCoverage] = useState(0.95);
+  const [speedPreset, setSpeedPreset] = useState("slow");
+  const [showAdvanced, setShowAdvanced] = useState(false);
   const [modelKey, setModelKey] = useState("auto");
   const [models, setModels] = useState([
     { key: "auto", label: "Auto (largest available)", available: true },
@@ -47,6 +49,52 @@ export default function ConfigPage() {
       setStatus("Loaded existing session. Upload a video or update config.");
     }
   }, []);
+
+  useEffect(() => {
+    if (speedPreset === "custom") return;
+    const presets = {
+      slow: {
+        frameStride: 1,
+        frameInterpolation: "nearest",
+        roiEnabled: false,
+        roiMargin: 0.15,
+        roiMinSize: 256,
+        roiMaxCoverage: 0.95,
+      },
+      medium: {
+        frameStride: 2,
+        frameInterpolation: "nearest",
+        roiEnabled: true,
+        roiMargin: 0.15,
+        roiMinSize: 256,
+        roiMaxCoverage: 0.95,
+      },
+      fast: {
+        frameStride: 4,
+        frameInterpolation: "nearest",
+        roiEnabled: true,
+        roiMargin: 0.15,
+        roiMinSize: 256,
+        roiMaxCoverage: 0.95,
+      },
+      ultra: {
+        frameStride: 6,
+        frameInterpolation: "nearest",
+        roiEnabled: true,
+        roiMargin: 0.15,
+        roiMinSize: 256,
+        roiMaxCoverage: 0.95,
+      },
+    };
+    const preset = presets[speedPreset];
+    if (!preset) return;
+    setFrameStride(preset.frameStride);
+    setFrameInterpolation(preset.frameInterpolation);
+    setRoiEnabled(preset.roiEnabled);
+    setRoiMargin(preset.roiMargin);
+    setRoiMinSize(preset.roiMinSize);
+    setRoiMaxCoverage(preset.roiMaxCoverage);
+  }, [speedPreset]);
 
   useEffect(() => {
     if (!sessionId) {
@@ -230,6 +278,17 @@ export default function ConfigPage() {
         input[type="checkbox"] { accent-color: black; }
         input[type="text"] { border: 2px solid #e5e7eb; border-radius: 8px; padding: 10px 16px; width: 100%; transition: all 0.3s ease; }
         input[type="text"]:focus { outline: none; border-color: black; }
+        .info-pill { display: inline-flex; align-items: center; justify-content: center; width: 16px; height: 16px; border-radius: 999px; border: 1px solid #9ca3af; font-size: 10px; color: #6b7280; margin-left: 6px; position: relative; cursor: help; }
+        .info-pill::after { content: attr(data-tooltip); position: absolute; left: 50%; bottom: 140%; transform: translateX(-50%); background: #111827; color: white; font-size: 11px; padding: 6px 8px; border-radius: 6px; white-space: normal; text-align: center; min-width: 140px; max-width: 220px; opacity: 0; pointer-events: none; z-index: 20; box-shadow: 0 6px 16px rgba(0, 0, 0, 0.2); transition: opacity 0.2s ease, transform 0.2s ease; }
+        .info-pill::before { content: ""; position: absolute; left: 50%; bottom: 120%; transform: translateX(-50%); border: 6px solid transparent; border-top-color: #111827; opacity: 0; transition: opacity 0.2s ease; }
+        .info-pill:hover::after,
+        .info-pill:focus::after { opacity: 1; transform: translateX(-50%) translateY(-2px); }
+        .info-pill:hover::before,
+        .info-pill:focus::before { opacity: 1; }
+        .warning-note { display: inline-flex; align-items: center; gap: 8px; font-size: 12px; color: #b45309; margin-top: 8px; }
+        .warning-icon { display: inline-flex; align-items: center; justify-content: center; width: 16px; height: 16px; border-radius: 999px; border: 1px solid #f59e0b; color: #b45309; font-weight: 700; font-size: 11px; }
+        .toggle-link { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; color: #374151; cursor: pointer; }
+        .toggle-link:hover { color: #111827; }
         .video-preview { background: #000; border: 2px solid #e5e7eb; border-radius: 12px; aspect-ratio: 16/9; display: flex; align-items: center; justify-content: center; position: relative; overflow: hidden; }
         video { width: 100%; height: 100%; object-fit: contain; }
         .stat-card { background: white; border: 2px solid #e5e7eb; border-radius: 8px; padding: 12px; text-align: center; }
@@ -376,76 +435,138 @@ export default function ConfigPage() {
                 <h2 className="text-2xl font-bold mb-4">Speed Controls</h2>
                 <div className="space-y-4">
                   <div>
-                    <label className="block text-sm font-medium mb-2">Frame Stride (skip frames)</label>
-                    <input
-                      type="text"
-                      value={frameStride}
-                      onChange={(event) => setFrameStride(event.target.value)}
-                    />
-                    <p className="text-xs text-gray-500 mt-2">
-                      Use 1 to process every frame. 2–4 gives big speedups.
-                    </p>
-                  </div>
-                  <div>
-                    <label className="block text-sm font-medium mb-2">Interpolation</label>
+                    <label className="block text-sm font-medium mb-2">Performance Preset</label>
                     <select
                       className="dropdown"
-                      value={frameInterpolation}
-                      onChange={(event) => setFrameInterpolation(event.target.value)}
-                      disabled={Number(frameStride) <= 1}
+                      value={speedPreset}
+                      onChange={(event) => setSpeedPreset(event.target.value)}
                     >
-                      <option value="nearest">Nearest (fastest)</option>
-                      <option value="linear">Linear (smoother)</option>
+                      <option value="slow">Slow</option>
+                      <option value="medium">Medium</option>
+                      <option value="fast">Fast</option>
+                      <option value="ultra">Ultra</option>
+                      <option value="custom">Custom</option>
                     </select>
+                    <div className="warning-note">
+                      <span className="warning-icon">!</span>
+                      Changing this will give considerably worse results.
+                    </div>
                   </div>
-                  <div className="border-t pt-4">
-                    <label className="flex items-center gap-2 text-sm">
-                      <input
-                        type="checkbox"
-                        checked={roiEnabled}
-                        onChange={(event) => setRoiEnabled(event.target.checked)}
-                      />
-                      Enable ROI cropping around annotated points
-                    </label>
-                    <div className="grid grid-cols-2 gap-3 mt-3">
+                  <button
+                    type="button"
+                    className="toggle-link"
+                    onClick={() => setShowAdvanced((prev) => !prev)}
+                  >
+                    {showAdvanced ? "Hide" : "Customize"}
+                    <span>{showAdvanced ? "▲" : "▼"}</span>
+                  </button>
+                  {showAdvanced && (
+                    <div className="space-y-4">
                       <div>
-                        <label className="block text-sm font-medium mb-2">ROI Margin (0–1)</label>
+                        <label className="block text-sm font-medium mb-2">
+                          Frame Stride (skip frames)
+                          <span className="info-pill" data-tooltip="Processes every Nth frame. Higher = faster, less temporal detail." aria-label="Processes every Nth frame. Higher equals faster with less temporal detail." tabIndex={0}>i</span>
+                        </label>
                         <input
                           type="text"
-                          value={roiMargin}
-                          onChange={(event) => setRoiMargin(event.target.value)}
-                          disabled={!roiEnabled}
+                          value={frameStride}
+                          onChange={(event) => {
+                            setFrameStride(event.target.value);
+                            setSpeedPreset("custom");
+                          }}
                         />
+                        <p className="text-xs text-gray-500 mt-2">
+                          Use 1 to process every frame. 2–4 gives big speedups.
+                        </p>
                       </div>
                       <div>
-                        <label className="block text-sm font-medium mb-2">ROI Min Size (px)</label>
-                        <input
-                          type="text"
-                          value={roiMinSize}
-                          onChange={(event) => setRoiMinSize(event.target.value)}
-                          disabled={!roiEnabled}
-                        />
+                        <label className="block text-sm font-medium mb-2">
+                          Interpolation
+                          <span className="info-pill" data-tooltip="Fills skipped frames by copying or blending masks." aria-label="Fills skipped frames by copying or blending masks." tabIndex={0}>i</span>
+                        </label>
+                        <select
+                          className="dropdown"
+                          value={frameInterpolation}
+                          onChange={(event) => {
+                            setFrameInterpolation(event.target.value);
+                            setSpeedPreset("custom");
+                          }}
+                          disabled={Number(frameStride) <= 1}
+                        >
+                          <option value="nearest">Nearest (fastest)</option>
+                          <option value="linear">Linear (smoother)</option>
+                        </select>
                       </div>
-                      <div>
-                        <label className="block text-sm font-medium mb-2">ROI Max Coverage (0–1)</label>
-                        <input
-                          type="text"
-                          value={roiMaxCoverage}
-                          onChange={(event) => setRoiMaxCoverage(event.target.value)}
-                          disabled={!roiEnabled}
-                        />
+                      <div className="border-t pt-4">
+                        <label className="flex items-center gap-2 text-sm">
+                          <input
+                            type="checkbox"
+                            checked={roiEnabled}
+                            onChange={(event) => {
+                              setRoiEnabled(event.target.checked);
+                              setSpeedPreset("custom");
+                            }}
+                          />
+                          ROI crop around annotated points
+                          <span className="info-pill" data-tooltip="Crops frames to a box around your clicks. Faster, but static." aria-label="Crops frames to a box around your clicks. Faster, but static." tabIndex={0}>i</span>
+                        </label>
+                        <div className="grid grid-cols-2 gap-3 mt-3">
+                          <div>
+                            <label className="block text-sm font-medium mb-2">ROI Margin (0–1)</label>
+                            <input
+                              type="text"
+                              value={roiMargin}
+                              onChange={(event) => {
+                                setRoiMargin(event.target.value);
+                                setSpeedPreset("custom");
+                              }}
+                              disabled={!roiEnabled}
+                            />
+                          </div>
+                          <div>
+                            <label className="block text-sm font-medium mb-2">ROI Min Size (px)</label>
+                            <input
+                              type="text"
+                              value={roiMinSize}
+                              onChange={(event) => {
+                                setRoiMinSize(event.target.value);
+                                setSpeedPreset("custom");
+                              }}
+                              disabled={!roiEnabled}
+                            />
+                          </div>
+                          <div>
+                            <label className="block text-sm font-medium mb-2">ROI Max Coverage (0–1)</label>
+                            <input
+                              type="text"
+                              value={roiMaxCoverage}
+                              onChange={(event) => {
+                                setRoiMaxCoverage(event.target.value);
+                                setSpeedPreset("custom");
+                              }}
+                              disabled={!roiEnabled}
+                            />
+                          </div>
+                        </div>
                       </div>
                     </div>
-                    <p className="text-xs text-gray-500 mt-2">
-                      ROI is static; if objects move outside it, accuracy drops.
-                    </p>
-                  </div>
+                  )}
                 </div>
               </div>
 
               <div className="control-panel">
                 <h2 className="text-2xl font-bold mb-4">Advanced Processing</h2>
-                <div className="grid grid-cols-2 gap-3">
+                <button
+                  type="button"
+                  className="toggle-link mb-3"
+                  onClick={() => setShowAdvanced((prev) => !prev)}
+                >
+                  {showAdvanced ? "Hide" : "Customize"}
+                  <span>{showAdvanced ? "▲" : "▼"}</span>
+                </button>
+                {showAdvanced && (
+                  <>
+                    <div className="grid grid-cols-2 gap-3">
                   <div>
                     <label className="block text-sm font-medium mb-2">Tune Target (0–1)</label>
                     <input
@@ -529,10 +650,12 @@ export default function ConfigPage() {
                       <option value="off">Off</option>
                     </select>
                   </div>
-                </div>
-                <p className="text-xs text-gray-500 mt-2">
-                  Leave fields blank to let auto-tune decide.
-                </p>
+                    </div>
+                    <p className="text-xs text-gray-500 mt-2">
+                      Leave fields blank to let auto-tune decide.
+                    </p>
+                  </>
+                )}
               </div>
 
               <div className="control-panel">
