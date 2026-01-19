@@ -1,4 +1,6 @@
-﻿import os
+import os
+import json
+import shutil
 from datetime import datetime
 import traceback
 
@@ -442,14 +444,22 @@ class UltraOptimizedProcessor:
         preview_max_dim=720,
         max_cache_frames=None,
         gpu_memory_fraction=None,
+        frame_stride=None,
+        frame_interpolation=None,
+        roi_enabled=False,
+        roi_margin=0.15,
+        roi_min_size=256,
+        roi_max_coverage=0.95,
         chunk_size=None,
         chunk_overlap=1,
         compress_masks=None,
     ):
         self.predictor = predictor
+        self.full_video_dir = video_dir
         self.video_dir = video_dir
         self.overlap_threshold = overlap_threshold
         self.reference_frame = reference_frame
+        self.reference_frame_full = reference_frame
         self.batch_size = batch_size
         self.auto_fallback = auto_fallback
         self.preview_callback = preview_callback
@@ -458,24 +468,33 @@ class UltraOptimizedProcessor:
         self.preview_max_dim = int(preview_max_dim)
         self.max_cache_frames = max_cache_frames
         self.gpu_memory_fraction = gpu_memory_fraction
+        self.frame_stride = frame_stride
+        self.frame_interpolation = frame_interpolation
+        self.roi_enabled = roi_enabled
+        self.roi_margin = roi_margin
+        self.roi_min_size = roi_min_size
+        self.roi_max_coverage = roi_max_coverage
         self.chunk_size = chunk_size
         self.chunk_overlap = chunk_overlap
         self.compress_masks = compress_masks
+        self.frame_index_map = None
+        self.roi_info = None
+        self._prepared = False
 
         self.overlap_tracker = ImprovedTargetOverlapTracker(overlap_threshold)
         self.partial_results = {}
 
-        self.frame_names = sorted(
+        self.full_frame_names = sorted(
             [
-                p
-                for p in os.listdir(self.video_dir)
+                p for p in os.listdir(self.full_video_dir)
                 if os.path.splitext(p)[-1].lower() in [".jpg", ".jpeg"]
             ],
             key=lambda p: int(os.path.splitext(p)[0]),
         )
 
-        if not self.frame_names:
+        if not self.full_frame_names:
             raise ValueError("No frames found in the specified directory!")
+        self.frame_names = list(self.full_frame_names)
 
         try:
             _cmap = plt.get_cmap("tab10")
@@ -525,6 +544,31 @@ class UltraOptimizedProcessor:
         flat = np.unpackbits(data)[:size]
         return flat.reshape(shape).astype(bool)
 
+    def _expand_roi_mask(self, mask):
+        if mask is None or not self.roi_info:
+            return mask
+        x0 = int(self.roi_info["x0"])
+        y0 = int(self.roi_info["y0"])
+        x1 = int(self.roi_info["x1"])
+        y1 = int(self.roi_info["y1"])
+        full_w = int(self.roi_info["full_width"])
+        full_h = int(self.roi_info["full_height"])
+        roi_w = x1 - x0 + 1
+        roi_h = y1 - y0 + 1
+
+        if roi_w <= 0 or roi_h <= 0 or full_w <= 0 or full_h <= 0:
+            return mask
+
+        if mask.shape != (roi_h, roi_w) and mask.shape[0] > 0 and mask.shape[1] > 0:
+            try:
+                mask = cv2.resize(mask.astype(np.float32), (roi_w, roi_h), interpolation=cv2.INTER_LINEAR) > 0.5
+            except Exception:
+                return mask
+
+        full_mask = np.zeros((full_h, full_w), dtype=bool)
+        full_mask[y0 : y1 + 1, x0 : x1 + 1] = mask
+        return full_mask
+
     def _log(self, message):
         cb = getattr(self, "log_callback", None)
         if cb is None:
@@ -537,10 +581,277 @@ class UltraOptimizedProcessor:
     def get_partial_results(self):
         return self.partial_results or {}
 
+    def _list_frame_files(self, video_dir):
+        return sorted(
+            [
+                p
+                for p in os.listdir(video_dir)
+                if os.path.splitext(p)[-1].lower() in [".jpg", ".jpeg"]
+            ],
+            key=lambda p: int(os.path.splitext(p)[0]),
+        )
+
+    def _map_frame_idx(self, local_idx):
+        if not self.frame_index_map:
+            return local_idx
+        if 0 <= local_idx < len(self.frame_index_map):
+            return self.frame_index_map[local_idx]
+        return local_idx
+
+    def _compute_roi_box(self, points_dict, frame_width, frame_height):
+        if not self.roi_enabled:
+            return None
+        all_points = []
+        for points in points_dict.values():
+            for pt in points:
+                if pt and len(pt) >= 2:
+                    all_points.append(pt)
+        if not all_points:
+            return None
+
+        xs = [p[0] for p in all_points]
+        ys = [p[1] for p in all_points]
+        min_x = max(0, int(min(xs)))
+        max_x = min(frame_width - 1, int(max(xs)))
+        min_y = max(0, int(min(ys)))
+        max_y = min(frame_height - 1, int(max(ys)))
+        if max_x <= min_x or max_y <= min_y:
+            return None
+
+        box_w = max(1, max_x - min_x + 1)
+        box_h = max(1, max_y - min_y + 1)
+        pad_x = int(box_w * float(self.roi_margin))
+        pad_y = int(box_h * float(self.roi_margin))
+
+        x0 = max(0, min_x - pad_x)
+        y0 = max(0, min_y - pad_y)
+        x1 = min(frame_width - 1, max_x + pad_x)
+        y1 = min(frame_height - 1, max_y + pad_y)
+
+        roi_w = x1 - x0 + 1
+        roi_h = y1 - y0 + 1
+        min_size = int(self.roi_min_size) if self.roi_min_size else 0
+        if min_size > 0:
+            if roi_w < min_size:
+                extra = min_size - roi_w
+                x0 = max(0, x0 - extra // 2)
+                x1 = min(frame_width - 1, x1 + (extra - extra // 2))
+            if roi_h < min_size:
+                extra = min_size - roi_h
+                y0 = max(0, y0 - extra // 2)
+                y1 = min(frame_height - 1, y1 + (extra - extra // 2))
+
+        roi_w = x1 - x0 + 1
+        roi_h = y1 - y0 + 1
+        if roi_w <= 0 or roi_h <= 0:
+            return None
+
+        coverage = (roi_w * roi_h) / float(frame_width * frame_height)
+        if coverage >= float(self.roi_max_coverage):
+            return None
+
+        return (x0, y0, x1, y1)
+
+    def _ensure_stride_dir(self, indices):
+        stride = int(self.frame_stride)
+        stride_dir = f"{self.full_video_dir}_stride_{stride}_ref_{self.reference_frame_full}"
+        os.makedirs(stride_dir, exist_ok=True)
+        meta_path = os.path.join(stride_dir, "_stride_meta.json")
+        meta = {
+            "stride": stride,
+            "reference_frame": self.reference_frame_full,
+            "frame_count": len(self.full_frame_names),
+        }
+        if os.path.exists(meta_path):
+            try:
+                existing = json.loads(open(meta_path, "r", encoding="utf-8").read())
+            except Exception:
+                existing = None
+            if existing == meta and len(self._list_frame_files(stride_dir)) == len(indices):
+                return stride_dir
+
+        for idx, src_idx in enumerate(indices):
+            src_name = self.full_frame_names[src_idx]
+            src_path = os.path.join(self.full_video_dir, src_name)
+            dst_name = f"{idx:05d}{os.path.splitext(src_name)[-1]}"
+            dst_path = os.path.join(stride_dir, dst_name)
+            if os.path.exists(dst_path):
+                continue
+            try:
+                os.link(src_path, dst_path)
+            except Exception:
+                shutil.copy2(src_path, dst_path)
+
+        with open(meta_path, "w", encoding="utf-8") as f:
+            json.dump(meta, f)
+        return stride_dir
+
+    def _ensure_roi_dir(self, source_dir, source_names, roi_box):
+        x0, y0, x1, y1 = roi_box
+        roi_dir = f"{source_dir}_roi_{x0}_{y0}_{x1}_{y1}"
+        os.makedirs(roi_dir, exist_ok=True)
+        meta_path = os.path.join(roi_dir, "_roi_meta.json")
+        meta = {"roi_box": [x0, y0, x1, y1], "frame_count": len(source_names)}
+        if os.path.exists(meta_path):
+            try:
+                existing = json.loads(open(meta_path, "r", encoding="utf-8").read())
+            except Exception:
+                existing = None
+            if existing == meta and len(self._list_frame_files(roi_dir)) == len(source_names):
+                return roi_dir
+
+        for name in source_names:
+            src_path = os.path.join(source_dir, name)
+            dst_path = os.path.join(roi_dir, name)
+            if os.path.exists(dst_path):
+                continue
+            frame = cv2.imread(src_path)
+            if frame is None:
+                continue
+            crop = frame[y0 : y1 + 1, x0 : x1 + 1]
+            cv2.imwrite(dst_path, crop)
+
+        with open(meta_path, "w", encoding="utf-8") as f:
+            json.dump(meta, f)
+        return roi_dir
+
+    def _prepare_frame_source(self, points_dict):
+        if self._prepared:
+            return
+        self._prepared = True
+
+        total_frames = len(self.full_frame_names)
+        self.frame_index_map = list(range(total_frames))
+        self.video_dir = self.full_video_dir
+        self.frame_names = list(self.full_frame_names)
+        self.reference_frame = max(0, min(self.reference_frame_full, total_frames - 1))
+
+        stride = None
+        if self.frame_stride is not None:
+            try:
+                stride = int(self.frame_stride)
+            except (TypeError, ValueError):
+                stride = None
+        if stride is not None and stride > 1:
+            indices = list(range(self.reference_frame, total_frames, stride))
+            if not indices:
+                indices = [self.reference_frame]
+            self.frame_index_map = indices
+            self.reference_frame = 0
+            self.video_dir = self._ensure_stride_dir(indices)
+            self.frame_names = self._list_frame_files(self.video_dir)
+
+        if self.roi_enabled:
+            first_frame = cv2.imread(os.path.join(self.full_video_dir, self.full_frame_names[0]))
+            if first_frame is not None:
+                full_h, full_w = first_frame.shape[:2]
+                roi_box = self._compute_roi_box(points_dict, full_w, full_h)
+                if roi_box:
+                    self.roi_info = {
+                        "x0": roi_box[0],
+                        "y0": roi_box[1],
+                        "x1": roi_box[2],
+                        "y1": roi_box[3],
+                        "full_width": full_w,
+                        "full_height": full_h,
+                    }
+                    self.video_dir = self._ensure_roi_dir(self.video_dir, self.frame_names, roi_box)
+                    self.frame_names = self._list_frame_files(self.video_dir)
+                else:
+                    self.roi_info = None
+
+        stride_val = None
+        if self.frame_stride is not None:
+            try:
+                stride_val = int(self.frame_stride)
+            except (TypeError, ValueError):
+                stride_val = None
+        if stride_val and stride_val > 1:
+            self._log(
+                "frame stride enabled: stride=%s processed_frames=%s total_frames=%s"
+                % (stride_val, len(self.frame_names), len(self.full_frame_names))
+            )
+        if self.roi_info:
+            self._log(
+                "roi enabled: box=(%s,%s)-(%s,%s) full_size=%sx%s"
+                % (
+                    self.roi_info["x0"],
+                    self.roi_info["y0"],
+                    self.roi_info["x1"],
+                    self.roi_info["y1"],
+                    self.roi_info["full_width"],
+                    self.roi_info["full_height"],
+                )
+            )
+
+    def _fill_missing_frames(self, results):
+        if not self.frame_index_map:
+            return results
+        stride = None
+        if self.frame_stride is not None:
+            try:
+                stride = int(self.frame_stride)
+            except (TypeError, ValueError):
+                stride = None
+        if stride is None or stride <= 1:
+            return results
+
+        processed = sorted(results.keys())
+        if len(processed) < 2:
+            return results
+
+        interpolation = (self.frame_interpolation or "nearest").lower()
+        for prev_idx, next_idx in zip(processed, processed[1:]):
+            if next_idx <= prev_idx + 1:
+                continue
+            gap = next_idx - prev_idx
+            prev_masks = results.get(prev_idx, {})
+            next_masks = results.get(next_idx, {})
+            for missing in range(prev_idx + 1, next_idx):
+                if interpolation == "linear" and next_masks:
+                    alpha = (missing - prev_idx) / float(gap)
+                    interp_masks = {}
+                    obj_ids = set(prev_masks.keys()) | set(next_masks.keys())
+                    for obj_id in obj_ids:
+                        pm = self._decompress_mask(prev_masks.get(obj_id))
+                        nm = self._decompress_mask(next_masks.get(obj_id))
+                        if pm is None and nm is None:
+                            continue
+                        if pm is None:
+                            mask = nm
+                        elif nm is None:
+                            mask = pm
+                        else:
+                            if pm.shape != nm.shape:
+                                try:
+                                    nm = cv2.resize(
+                                        nm.astype(np.float32),
+                                        (pm.shape[1], pm.shape[0]),
+                                        interpolation=cv2.INTER_LINEAR,
+                                    )
+                                    nm = nm > 0.5
+                                except Exception:
+                                    nm = pm
+                            blend = (1.0 - alpha) * pm.astype(np.float32) + alpha * nm.astype(np.float32)
+                            mask = blend > 0.5
+                        interp_masks[obj_id] = self._compress_mask(mask) if self.compress_masks else mask
+                    results[missing] = interp_masks
+                else:
+                    results[missing] = prev_masks
+
+        last_idx = processed[-1]
+        full_last = len(self.full_frame_names) - 1
+        if last_idx < full_last:
+            prev_masks = results.get(last_idx, {})
+            for missing in range(last_idx + 1, full_last + 1):
+                results[missing] = prev_masks
+        return results
+
     def process_video_with_memory_management(self, points_dict, labels_dict, object_names, debug=True):
         """Process video with ultra memory management and improved overlap detection."""
         last_exc = None
         self.partial_results = {}
+        self._prepare_frame_source(points_dict)
         try:
             if debug:
                 self._log(
@@ -593,6 +904,7 @@ class UltraOptimizedProcessor:
             ultra_cleanup_memory()
 
     def _process_standard_optimized(self, points_dict, labels_dict, object_names, debug):
+        self._prepare_frame_source(points_dict)
         image_size = getattr(self.predictor, "image_size", 1024)
         bytes_per_frame = image_size * image_size * 3 * 4
         estimated_bytes = bytes_per_frame * len(self.frame_names)
@@ -677,6 +989,7 @@ class UltraOptimizedProcessor:
                 if out_frame_idx < skip_until:
                     continue
                 try:
+                    global_frame_idx = self._map_frame_idx(out_frame_idx)
                     if frame_count - last_memory_check >= 50:
                         gpu_info = get_gpu_memory_info()
                         if gpu_info and gpu_info["utilization_pct"] > 90:
@@ -693,18 +1006,18 @@ class UltraOptimizedProcessor:
                         del mask
 
                     if self.compress_masks:
-                        results[out_frame_idx] = {
+                        results[global_frame_idx] = {
                             obj_id: self._compress_mask(mask) for obj_id, mask in frame_results.items()
                         }
                     else:
-                        results[out_frame_idx] = frame_results
+                        results[global_frame_idx] = frame_results
 
                     if targets_found:
                         frame_analysis = self.overlap_tracker.track_frame_overlaps_batch(
-                            out_frame_idx, frame_results, object_names
+                            global_frame_idx, frame_results, object_names
                         )
                         self._maybe_emit_preview(out_frame_idx, frame_results, frame_analysis)
-                        frame_analyses[out_frame_idx] = frame_analysis
+                        frame_analyses[global_frame_idx] = frame_analysis
                         if frame_analysis.get("target_overlaps"):
                             overlap_count += 1
                     else:
@@ -860,6 +1173,7 @@ class UltraOptimizedProcessor:
             last_frame = max(results.keys()) if results else 0
             self.overlap_tracker.finalize_tracking(last_frame)
 
+        results = self._fill_missing_frames(results)
         self.frame_analyses = frame_analyses
         if chunk_size is None:
             self.predictor.reset_state(inference_state)
@@ -930,19 +1244,28 @@ class UltraOptimizedProcessor:
             print(f"[preview] skipped: {exc}")
 
     def save_results_video_with_enhanced_annotations(
-        self, results, output_path, fps=30, show_original=True, alpha=0.5, frame_limit=None
+        self,
+        results,
+        output_path,
+        fps=30,
+        show_original=True,
+        alpha=0.5,
+        frame_limit=None,
+        progress_callback=None,
     ):
         """Save results video with enhanced visual feedback for looking-at events."""
         if not results:
             print("No results to save!")
             return
 
-        first_frame = cv2.imread(os.path.join(self.video_dir, self.frame_names[0]))
+        frame_dir = self.full_video_dir if self.full_video_dir else self.video_dir
+        frame_names = self.full_frame_names if self.full_frame_names else self.frame_names
+        first_frame = cv2.imread(os.path.join(frame_dir, frame_names[0]))
         height, width = first_frame.shape[:2]
 
         out_width = width * 2 if show_original else width
         out = None
-        for codec in ("avc1", "H264", "mp4v"):
+        for codec in ("mp4v", "H264", "avc1"):
             fourcc = cv2.VideoWriter_fourcc(*codec)
             out = cv2.VideoWriter(output_path, fourcc, fps, (int(out_width), int(height)))
             if out.isOpened():
@@ -954,7 +1277,7 @@ class UltraOptimizedProcessor:
         cmap = plt.get_cmap("tab10")
         overlap_frame_count = 0
 
-        max_frame = len(self.frame_names) - 1
+        max_frame = len(frame_names) - 1
         if frame_limit is not None:
             try:
                 frame_limit = int(frame_limit)
@@ -964,7 +1287,7 @@ class UltraOptimizedProcessor:
             max_frame = min(max_frame, max(0, frame_limit))
 
         for frame_idx in tqdm(range(max_frame + 1), desc="Saving frames"):
-            frame = cv2.imread(os.path.join(self.video_dir, self.frame_names[frame_idx]))
+            frame = cv2.imread(os.path.join(frame_dir, frame_names[frame_idx]))
             if frame is None:
                 continue
 
@@ -1008,6 +1331,7 @@ class UltraOptimizedProcessor:
             if frame_idx in results:
                 for obj_id, mask in results[frame_idx].items():
                     mask = self._decompress_mask(mask)
+                    mask = self._expand_roi_mask(mask)
                     if mask is None:
                         continue
                     if len(mask.shape) == 3:
@@ -1085,6 +1409,11 @@ class UltraOptimizedProcessor:
                 output_frame = overlay
 
             out.write(output_frame)
+            if progress_callback and (frame_idx % 50 == 0 or frame_idx == max_frame):
+                try:
+                    progress_callback(frame_idx, max_frame)
+                except Exception:
+                    pass
 
         out.release()
 
@@ -1190,7 +1519,7 @@ class UltraOptimizedProcessor:
         with open(output_path, "w", encoding="utf-8") as f:
             f.write(header + tier_content + footer)
 
-    def export_framewise_csv(self, results, object_names, csv_path):
+    def export_framewise_csv(self, results, object_names, csv_path, progress_callback=None):
         import csv
 
         if not results:
@@ -1221,8 +1550,19 @@ class UltraOptimizedProcessor:
             "looking_at_count",
         ]
 
+        roi_info = getattr(self, "roi_info", None)
+        roi_x0 = int(roi_info["x0"]) if roi_info else 0
+        roi_y0 = int(roi_info["y0"]) if roi_info else 0
+        roi_w = int(roi_info["x1"] - roi_info["x0"] + 1) if roi_info else None
+        roi_h = int(roi_info["y1"] - roi_info["y0"] + 1) if roi_info else None
+
         def _mask_stats(m):
             try:
+                if roi_info and m is not None and roi_w and roi_h and m.shape != (roi_h, roi_w):
+                    try:
+                        m = cv2.resize(m.astype(np.float32), (roi_w, roi_h), interpolation=cv2.INTER_LINEAR) > 0.5
+                    except Exception:
+                        pass
                 m = m.astype(np.uint8)
                 ys, xs = np.where(m > 0)
                 if ys.size == 0:
@@ -1233,6 +1573,11 @@ class UltraOptimizedProcessor:
                 cx = float(xs.mean())
                 cy = float(ys.mean())
                 area = int(ys.size)
+                if roi_info:
+                    x0 += roi_x0
+                    y0 += roi_y0
+                    cx += roi_x0
+                    cy += roi_y0
                 return x0, y0, w, h, cx, cy, area
             except Exception:
                 return (None,) * 7
@@ -1241,6 +1586,8 @@ class UltraOptimizedProcessor:
             writer = csv.DictWriter(f, fieldnames=fieldnames)
             writer.writeheader()
 
+            total_frames = len(results)
+            processed_frames = 0
             for frame_idx in sorted(results.keys()):
                 frame_results = results.get(frame_idx, {})
                 frame_analysis = analyses.get(frame_idx, {}) or {}
@@ -1291,5 +1638,13 @@ class UltraOptimizedProcessor:
                         looking_at_count=(len(looking_at) if is_target else 0),
                     )
                     writer.writerow(row)
+                processed_frames += 1
+                if progress_callback and (
+                    processed_frames % 50 == 0 or processed_frames == total_frames
+                ):
+                    try:
+                        progress_callback(processed_frames, total_frames)
+                    except Exception:
+                        pass
 
         print(f"CSV exported: {csv_path}")

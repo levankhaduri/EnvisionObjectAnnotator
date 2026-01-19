@@ -6,6 +6,7 @@ from uuid import uuid4
 import subprocess
 import json
 import cv2
+import math
 
 from .schemas import (
     SessionCreate,
@@ -20,6 +21,49 @@ from .schemas import (
 )
 from .state import state
 from .processing import start_background_job, test_mask_preview, list_available_models
+
+
+def _parse_ffprobe_rate(value):
+    value = (value or "").strip()
+    if not value:
+        return None
+    if "/" in value:
+        num, den = value.split("/", 1)
+        try:
+            num_f = float(num)
+            den_f = float(den)
+        except ValueError:
+            return None
+        if den_f == 0:
+            return None
+        return num_f / den_f
+    try:
+        return float(value)
+    except ValueError:
+        return None
+
+
+def _probe_video_fps(video_path):
+    cmd = [
+        "ffprobe",
+        "-v",
+        "error",
+        "-select_streams",
+        "v:0",
+        "-show_entries",
+        "stream=avg_frame_rate,r_frame_rate",
+        "-of",
+        "default=noprint_wrappers=1:nokey=1",
+        str(video_path),
+    ]
+    result = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+    if result.returncode != 0:
+        return None
+    for line in result.stdout.splitlines():
+        fps = _parse_ffprobe_rate(line)
+        if fps and fps > 0 and math.isfinite(fps):
+            return fps
+    return None
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 UPLOAD_DIR = BASE_DIR / "data" / "uploads"
@@ -130,6 +174,12 @@ def extract_frames(payload: FrameExtractionRequest):
     thumb_result = subprocess.run(thumb_cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
     if thumb_result.returncode != 0:
         print(f"[thumbs] generation failed: {thumb_result.stderr.strip()}")
+
+    fps = _probe_video_fps(session.video_path)
+    if fps:
+        config = session.config or {}
+        updated_config = {**config, "video_fps": float(fps)}
+        state.update_session(payload.session_id, config=updated_config)
 
     return {"status": "ok", "frames_dir": str(frames_dir)}
 
@@ -347,6 +397,7 @@ def get_results(session_id: str):
     outputs = {}
     if session.config:
         outputs = session.config.get("outputs", {}) or {}
+    outputs_meta = session.config.get("outputs_meta", {}) if session.config else None
     profiling = session.config.get("profiling") if session.config else None
 
     return ResultsResponse(
@@ -357,6 +408,7 @@ def get_results(session_id: str):
             "elan": outputs.get("elan"),
         },
         profiling=profiling,
+        outputs_meta=outputs_meta,
     )
 
 

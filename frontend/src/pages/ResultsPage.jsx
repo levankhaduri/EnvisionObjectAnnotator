@@ -5,6 +5,7 @@ import { fetchResults, getResultDownloadUrl } from "../api.js";
 export default function ResultsPage() {
   const [sessionId, setSessionId] = useState("");
   const [outputs, setOutputs] = useState({});
+  const [outputsMeta, setOutputsMeta] = useState({});
   const [profiling, setProfiling] = useState(null);
   const [status, setStatus] = useState("Loading results...");
 
@@ -15,7 +16,13 @@ export default function ResultsPage() {
     }
   }, []);
 
+  const csvStatus = outputsMeta?.csv_status;
+  const csvProgress = outputsMeta?.csv_progress;
+  const csvError = outputsMeta?.csv_error;
+  const csvPending = !outputs.csv && (csvStatus === "pending" || csvStatus === "running");
+
   useEffect(() => {
+    let timer;
     async function load() {
       if (!sessionId) {
         setStatus("No session found.");
@@ -24,6 +31,7 @@ export default function ResultsPage() {
       try {
         const data = await fetchResults(sessionId);
         setOutputs(data.outputs || {});
+        setOutputsMeta(data.outputs_meta || {});
         setProfiling(data.profiling || null);
         setStatus("Results ready.");
       } catch (err) {
@@ -31,7 +39,13 @@ export default function ResultsPage() {
       }
     }
     load();
-  }, [sessionId]);
+    if (sessionId && csvPending) {
+      timer = setInterval(load, 5000);
+    }
+    return () => {
+      if (timer) clearInterval(timer);
+    };
+  }, [sessionId, csvPending]);
 
   const formatSeconds = (value) => {
     if (typeof value !== "number" || Number.isNaN(value)) return "---";
@@ -52,6 +66,7 @@ export default function ResultsPage() {
         .btn-primary:hover { background: #374151; transform: translateY(-2px); box-shadow: 0 4px 12px rgba(0,0,0,0.2); }
         .btn-secondary { background: white; color: black; border: 2px solid black; padding: 12px 24px; border-radius: 8px; font-weight: 600; transition: all 0.3s ease; cursor: pointer; }
         .btn-secondary:hover { background: black; color: white; }
+        .btn-disabled { opacity: 0.6; cursor: not-allowed; pointer-events: none; }
         .progress-steps { display: flex; align-items: center; justify-content: center; gap: 8px; margin-bottom: 32px; }
         .step { display: flex; align-items: center; gap: 8px; }
         .step-circle { width: 32px; height: 32px; border-radius: 50%; border: 2px solid #e5e7eb; display: flex; align-items: center; justify-content: center; font-weight: 600; font-size: 14px; }
@@ -129,12 +144,31 @@ export default function ResultsPage() {
                   </div>
                   <div className="file-card">
                     <h3 className="font-semibold mb-2">CSV Output</h3>
-                    <a
-                      className="btn-secondary inline-flex"
-                      href={outputs.csv ? getResultDownloadUrl(sessionId, "csv") : "#"}
-                    >
-                      Download
-                    </a>
+                    {outputs.csv ? (
+                      <a
+                        className="btn-secondary inline-flex"
+                        href={getResultDownloadUrl(sessionId, "csv")}
+                      >
+                        Download
+                      </a>
+                    ) : (
+                      <button className="btn-secondary btn-disabled inline-flex" disabled>
+                        Download
+                      </button>
+                    )}
+                    {csvPending && (
+                      <p className="text-xs text-gray-500 mt-2">
+                        CSV export in progress{typeof csvProgress === "number" ? ` (${Math.round(csvProgress * 100)}%)` : ""}.
+                      </p>
+                    )}
+                    {csvStatus === "disabled" && (
+                      <p className="text-xs text-gray-500 mt-2">CSV export disabled for this run.</p>
+                    )}
+                    {csvStatus === "error" && (
+                      <p className="text-xs text-red-600 mt-2">
+                        CSV export failed{csvError ? `: ${csvError}` : "."}
+                      </p>
+                    )}
                   </div>
                   <div className="file-card">
                     <h3 className="font-semibold mb-2">ELAN Timeline</h3>

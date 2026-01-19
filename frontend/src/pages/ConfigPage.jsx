@@ -8,11 +8,27 @@ export default function ConfigPage() {
   const [threshold, setThreshold] = useState(10);
   const [batchSize, setBatchSize] = useState(50);
   const [autoFallback, setAutoFallback] = useState(true);
+  const [autoTune, setAutoTune] = useState(true);
+  const [tuningTarget, setTuningTarget] = useState("0.75");
+  const [tuningReserveGb, setTuningReserveGb] = useState("8");
+  const [previewStride, setPreviewStride] = useState("");
+  const [maxCacheFrames, setMaxCacheFrames] = useState("");
+  const [maxCacheCap, setMaxCacheCap] = useState("");
+  const [chunkSize, setChunkSize] = useState("");
+  const [chunkSeconds, setChunkSeconds] = useState("");
+  const [chunkOverlap, setChunkOverlap] = useState("1");
+  const [compressMode, setCompressMode] = useState("auto");
   const [useMps, setUseMps] = useState(false);
   const [exportVideo, setExportVideo] = useState(true);
   const [exportElan, setExportElan] = useState(true);
   const [exportCsv, setExportCsv] = useState(true);
   const [outputDir, setOutputDir] = useState("");
+  const [frameStride, setFrameStride] = useState(1);
+  const [frameInterpolation, setFrameInterpolation] = useState("nearest");
+  const [roiEnabled, setRoiEnabled] = useState(false);
+  const [roiMargin, setRoiMargin] = useState(0.15);
+  const [roiMinSize, setRoiMinSize] = useState(256);
+  const [roiMaxCoverage, setRoiMaxCoverage] = useState(0.95);
   const [modelKey, setModelKey] = useState("auto");
   const [models, setModels] = useState([
     { key: "auto", label: "Auto (largest available)", available: true },
@@ -136,17 +152,49 @@ export default function ConfigPage() {
     try {
       setBusy(true);
       setStatus("Saving configuration...");
+      const toOptionalNumber = (value) => {
+        if (value === "" || value === null || value === undefined) return null;
+        const num = Number(value);
+        return Number.isFinite(num) ? num : null;
+      };
+      const toOptionalInt = (value) => {
+        if (value === "" || value === null || value === undefined) return null;
+        const num = parseInt(value, 10);
+        return Number.isFinite(num) ? num : null;
+      };
+      const compressMasksValue = compressMode === "auto" ? null : compressMode === "on";
+      const tuningTargetValue = toOptionalNumber(tuningTarget);
+      const tuningReserveValue = toOptionalNumber(tuningReserveGb);
+      const roiMarginValue = toOptionalNumber(roiMargin);
+      const roiMinSizeValue = toOptionalInt(roiMinSize);
+      const roiMaxCoverageValue = toOptionalNumber(roiMaxCoverage);
       await updateConfig({
         session_id: sessionId,
         overlap_threshold: Number(threshold) / 100,
         batch_size: Number(batchSize),
         auto_fallback: autoFallback,
+        auto_tune: autoTune,
+        tuning_target: tuningTargetValue === null ? 0.75 : tuningTargetValue,
+        tuning_reserve_gb: tuningReserveValue === null ? 8.0 : tuningReserveValue,
+        preview_stride: toOptionalInt(previewStride),
+        max_cache_frames: toOptionalInt(maxCacheFrames),
+        max_cache_cap: toOptionalInt(maxCacheCap),
         use_mps: useMps,
         model_key: modelKey,
         export_video: exportVideo,
         export_elan: exportElan,
         export_csv: exportCsv,
         output_dir: outputDir || null,
+        chunk_size: toOptionalInt(chunkSize),
+        chunk_seconds: toOptionalNumber(chunkSeconds),
+        chunk_overlap: toOptionalInt(chunkOverlap) || 1,
+        compress_masks: compressMasksValue,
+        frame_stride: Number(frameStride) > 1 ? Number(frameStride) : null,
+        frame_interpolation: Number(frameStride) > 1 ? frameInterpolation : null,
+        roi_enabled: roiEnabled,
+        roi_margin: roiMarginValue === null ? 0.15 : roiMarginValue,
+        roi_min_size: roiMinSizeValue === null ? 256 : roiMinSizeValue,
+        roi_max_coverage: roiMaxCoverageValue === null ? 0.95 : roiMaxCoverageValue,
       });
       setStatus("Configuration saved. Proceed to annotation.");
       navigate("/annotation");
@@ -308,12 +356,183 @@ export default function ConfigPage() {
                   <label className="flex items-center gap-2 text-sm">
                     <input
                       type="checkbox"
+                      checked={autoTune}
+                      onChange={(event) => setAutoTune(event.target.checked)}
+                    />
+                    Auto tune processing based on memory headroom
+                  </label>
+                  <label className="flex items-center gap-2 text-sm">
+                    <input
+                      type="checkbox"
                       checked={useMps}
                       onChange={(event) => setUseMps(event.target.checked)}
                     />
                     Use MPS acceleration (experimental)
                   </label>
                 </div>
+              </div>
+
+              <div className="control-panel">
+                <h2 className="text-2xl font-bold mb-4">Speed Controls</h2>
+                <div className="space-y-4">
+                  <div>
+                    <label className="block text-sm font-medium mb-2">Frame Stride (skip frames)</label>
+                    <input
+                      type="text"
+                      value={frameStride}
+                      onChange={(event) => setFrameStride(event.target.value)}
+                    />
+                    <p className="text-xs text-gray-500 mt-2">
+                      Use 1 to process every frame. 2–4 gives big speedups.
+                    </p>
+                  </div>
+                  <div>
+                    <label className="block text-sm font-medium mb-2">Interpolation</label>
+                    <select
+                      className="dropdown"
+                      value={frameInterpolation}
+                      onChange={(event) => setFrameInterpolation(event.target.value)}
+                      disabled={Number(frameStride) <= 1}
+                    >
+                      <option value="nearest">Nearest (fastest)</option>
+                      <option value="linear">Linear (smoother)</option>
+                    </select>
+                  </div>
+                  <div className="border-t pt-4">
+                    <label className="flex items-center gap-2 text-sm">
+                      <input
+                        type="checkbox"
+                        checked={roiEnabled}
+                        onChange={(event) => setRoiEnabled(event.target.checked)}
+                      />
+                      Enable ROI cropping around annotated points
+                    </label>
+                    <div className="grid grid-cols-2 gap-3 mt-3">
+                      <div>
+                        <label className="block text-sm font-medium mb-2">ROI Margin (0–1)</label>
+                        <input
+                          type="text"
+                          value={roiMargin}
+                          onChange={(event) => setRoiMargin(event.target.value)}
+                          disabled={!roiEnabled}
+                        />
+                      </div>
+                      <div>
+                        <label className="block text-sm font-medium mb-2">ROI Min Size (px)</label>
+                        <input
+                          type="text"
+                          value={roiMinSize}
+                          onChange={(event) => setRoiMinSize(event.target.value)}
+                          disabled={!roiEnabled}
+                        />
+                      </div>
+                      <div>
+                        <label className="block text-sm font-medium mb-2">ROI Max Coverage (0–1)</label>
+                        <input
+                          type="text"
+                          value={roiMaxCoverage}
+                          onChange={(event) => setRoiMaxCoverage(event.target.value)}
+                          disabled={!roiEnabled}
+                        />
+                      </div>
+                    </div>
+                    <p className="text-xs text-gray-500 mt-2">
+                      ROI is static; if objects move outside it, accuracy drops.
+                    </p>
+                  </div>
+                </div>
+              </div>
+
+              <div className="control-panel">
+                <h2 className="text-2xl font-bold mb-4">Advanced Processing</h2>
+                <div className="grid grid-cols-2 gap-3">
+                  <div>
+                    <label className="block text-sm font-medium mb-2">Tune Target (0–1)</label>
+                    <input
+                      type="text"
+                      value={tuningTarget}
+                      onChange={(event) => setTuningTarget(event.target.value)}
+                      disabled={!autoTune}
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-sm font-medium mb-2">Reserve RAM (GB)</label>
+                    <input
+                      type="text"
+                      value={tuningReserveGb}
+                      onChange={(event) => setTuningReserveGb(event.target.value)}
+                      disabled={!autoTune}
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-sm font-medium mb-2">Preview Stride</label>
+                    <input
+                      type="text"
+                      value={previewStride}
+                      onChange={(event) => setPreviewStride(event.target.value)}
+                      placeholder="auto"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-sm font-medium mb-2">Max Cache Frames</label>
+                    <input
+                      type="text"
+                      value={maxCacheFrames}
+                      onChange={(event) => setMaxCacheFrames(event.target.value)}
+                      placeholder="auto"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-sm font-medium mb-2">Max Cache Cap</label>
+                    <input
+                      type="text"
+                      value={maxCacheCap}
+                      onChange={(event) => setMaxCacheCap(event.target.value)}
+                      placeholder="auto"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-sm font-medium mb-2">Chunk Size (frames)</label>
+                    <input
+                      type="text"
+                      value={chunkSize}
+                      onChange={(event) => setChunkSize(event.target.value)}
+                      placeholder="auto"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-sm font-medium mb-2">Chunk Seconds</label>
+                    <input
+                      type="text"
+                      value={chunkSeconds}
+                      onChange={(event) => setChunkSeconds(event.target.value)}
+                      placeholder="auto"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-sm font-medium mb-2">Chunk Overlap</label>
+                    <input
+                      type="text"
+                      value={chunkOverlap}
+                      onChange={(event) => setChunkOverlap(event.target.value)}
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-sm font-medium mb-2">Compress Masks</label>
+                    <select
+                      className="dropdown"
+                      value={compressMode}
+                      onChange={(event) => setCompressMode(event.target.value)}
+                    >
+                      <option value="auto">Auto</option>
+                      <option value="on">On</option>
+                      <option value="off">Off</option>
+                    </select>
+                  </div>
+                </div>
+                <p className="text-xs text-gray-500 mt-2">
+                  Leave fields blank to let auto-tune decide.
+                </p>
               </div>
 
               <div className="control-panel">

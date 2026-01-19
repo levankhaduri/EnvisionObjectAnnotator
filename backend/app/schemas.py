@@ -26,6 +26,12 @@ class ConfigUpdate(BaseModel):
     preview_stride: Optional[int] = None
     max_cache_frames: Optional[int] = None
     max_cache_cap: Optional[int] = None
+    frame_stride: Optional[int] = None
+    frame_interpolation: Optional[str] = None
+    roi_enabled: bool = False
+    roi_margin: float = 0.15
+    roi_min_size: int = 256
+    roi_max_coverage: float = 0.95
     chunk_size: Optional[int] = None
     chunk_seconds: Optional[float] = None
     chunk_overlap: int = 1
@@ -66,6 +72,7 @@ class ResultsResponse(BaseModel):
     session_id: str
     outputs: Dict[str, Optional[str]]
     profiling: Optional[Dict[str, object]] = None
+    outputs_meta: Optional[Dict[str, object]] = None
 
 
 class FrameExtractionRequest(BaseModel):

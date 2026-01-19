@@ -369,7 +369,7 @@ class HeadlessProcessor:
     def get_partial_results(self):
         return self._processor.get_partial_results()
 
-    def save_video(self, results, output_path, fps, frame_limit=None):
+    def save_video(self, results, output_path, fps, frame_limit=None, progress_callback=None):
         return self._processor.save_results_video_with_enhanced_annotations(
             results,
             output_path,
@@ -377,13 +377,16 @@ class HeadlessProcessor:
             show_original=True,
             alpha=0.5,
             frame_limit=frame_limit,
+            progress_callback=progress_callback,
         )
 
     def save_elan(self, video_path, output_path, fps):
         return self._processor.create_elan_file(video_path, output_path, fps=fps, frame_offset=0)
 
-    def save_csv(self, results, object_names, output_path):
-        return self._processor.export_framewise_csv(results, object_names, output_path)
+    def save_csv(self, results, object_names, output_path, progress_callback=None):
+        return self._processor.export_framewise_csv(
+            results, object_names, output_path, progress_callback=progress_callback
+        )
 
 
 def _set_status(session_id, status, progress, message):
@@ -483,7 +486,12 @@ def run_processing(session_id):
     auto_tune = bool(config.get("auto_tune", True))
     auto_tune_info = None
     fps = None
-    if session.video_path:
+    if "video_fps" in config:
+        try:
+            fps = float(config.get("video_fps"))
+        except (TypeError, ValueError):
+            fps = None
+    if fps is None and session.video_path:
         try:
             fps, _ = get_video_fps(session.video_path)
         except Exception:
@@ -492,6 +500,21 @@ def run_processing(session_id):
     export_elan = bool(config.get("export_elan", True))
     export_csv = bool(config.get("export_csv", True))
     reference_frame = int(config.get("reference_frame", 0))
+    frame_stride = config.get("frame_stride")
+    frame_interpolation = config.get("frame_interpolation")
+    roi_enabled = bool(config.get("roi_enabled", False))
+    try:
+        roi_margin = float(config.get("roi_margin", 0.15))
+    except (TypeError, ValueError):
+        roi_margin = 0.15
+    try:
+        roi_min_size = int(config.get("roi_min_size", 256))
+    except (TypeError, ValueError):
+        roi_min_size = 256
+    try:
+        roi_max_coverage = float(config.get("roi_max_coverage", 0.95))
+    except (TypeError, ValueError):
+        roi_max_coverage = 0.95
     use_mps = bool(config.get("use_mps", False))
     model_key = config.get("model_key") or "auto"
     resolved_model_key = model_key
@@ -579,6 +602,12 @@ def run_processing(session_id):
             preview_max_dim=720,
             max_cache_frames=max_cache_frames,
             gpu_memory_fraction=gpu_memory_fraction,
+            frame_stride=frame_stride,
+            frame_interpolation=frame_interpolation,
+            roi_enabled=roi_enabled,
+            roi_margin=roi_margin,
+            roi_min_size=roi_min_size,
+            roi_max_coverage=roi_max_coverage,
             chunk_size=chunk_size,
             chunk_overlap=chunk_overlap,
             compress_masks=compress_masks,
@@ -600,27 +629,98 @@ def run_processing(session_id):
 
     processing_done = None
 
-    def _write_outputs(results_to_save, suffix="", frame_limit=None):
+    def _write_primary_outputs(results_to_save, suffix="", frame_limit=None, fps_override=None):
         output_dir = Path(session.output_dir) if session.output_dir else Path(session.video_path).parent
         output_dir.mkdir(parents=True, exist_ok=True)
         video_stem = Path(session.video_path).stem
-        fps, _ = get_video_fps(session.video_path)
+        fps = fps_override
+        if fps is None:
+            fps, _ = get_video_fps(session.video_path)
 
         outputs = {}
         if export_video:
             video_path = output_dir / f"{video_stem}{suffix}_ANNOTATED.mp4"
-            wrapped.save_video(results_to_save, str(video_path), fps=fps, frame_limit=frame_limit)
+
+            def _save_progress(frame_idx, max_frame):
+                total = max(1, int(max_frame) + 1)
+                current = min(int(frame_idx) + 1, total)
+                progress = 0.85 + 0.15 * (current / float(total))
+                _set_status(
+                    session_id,
+                    "saving",
+                    min(progress, 0.99),
+                    f"Writing outputs: {current}/{total}",
+                )
+
+            wrapped.save_video(
+                results_to_save,
+                str(video_path),
+                fps=fps,
+                frame_limit=frame_limit,
+                progress_callback=_save_progress,
+            )
             outputs["annotated_video"] = str(video_path)
         if export_elan:
             elan_path = output_dir / f"{video_stem}{suffix}_ELAN_TIMELINE.eaf"
             wrapped.save_elan(session.video_path, str(elan_path), fps=fps)
             outputs["elan"] = str(elan_path)
-        if export_csv:
-            csv_path = output_dir / f"{video_stem}{suffix}_FRAME_BY_FRAME.csv"
-            wrapped.save_csv(results_to_save, object_names, str(csv_path))
-            outputs["csv"] = str(csv_path)
 
-        return outputs
+        return outputs, output_dir, video_stem
+
+    def _update_outputs_meta(csv_status=None, csv_progress=None, csv_error=None, outputs_override=None):
+        try:
+            session_state = state.get_session(session_id)
+        except KeyError:
+            return
+        config_state = session_state.config or {}
+        outputs_state = outputs_override or config_state.get("outputs", {}) or {}
+        outputs_meta = config_state.get("outputs_meta", {}) or {}
+        if csv_status is not None:
+            outputs_meta["csv_status"] = csv_status
+        if csv_progress is not None:
+            outputs_meta["csv_progress"] = csv_progress
+        if csv_error is not None:
+            outputs_meta["csv_error"] = csv_error
+        updated_config = {**config_state, "outputs": outputs_state, "outputs_meta": outputs_meta}
+        state.update_session(session_id, config=updated_config)
+
+    def _start_csv_export(results_to_save, outputs, output_dir, video_stem, suffix=""):
+        if not export_csv:
+            _update_outputs_meta(csv_status="disabled", csv_progress=0.0, outputs_override=outputs)
+            return
+
+        _update_outputs_meta(csv_status="pending", csv_progress=0.0, outputs_override=outputs)
+
+        def _csv_worker():
+            _update_outputs_meta(csv_status="running", csv_progress=0.0)
+            try:
+                csv_path = output_dir / f"{video_stem}{suffix}_FRAME_BY_FRAME.csv"
+
+                def _csv_progress(done, total):
+                    total = max(1, int(total))
+                    current = min(int(done), total)
+                    progress = current / float(total)
+                    _update_outputs_meta(csv_status="running", csv_progress=progress)
+
+                wrapped.save_csv(
+                    results_to_save,
+                    object_names,
+                    str(csv_path),
+                    progress_callback=_csv_progress,
+                )
+                outputs_done = {**outputs, "csv": str(csv_path)}
+                _update_outputs_meta(
+                    csv_status="completed",
+                    csv_progress=1.0,
+                    outputs_override=outputs_done,
+                )
+            except Exception as exc:
+                _log_debug(f"csv export error: {exc}")
+                _log_trace()
+                _update_outputs_meta(csv_status="error", csv_error=str(exc))
+
+        worker = threading.Thread(target=_csv_worker, daemon=True)
+        worker.start()
 
     try:
         _set_status(session_id, "processing", 0.2, "Processing frames")
@@ -644,7 +744,12 @@ def run_processing(session_id):
             _set_status(session_id, "saving", 0.85, "Writing partial outputs")
             try:
                 frame_limit = max(partial_results.keys()) if partial_results else None
-                outputs = _write_outputs(partial_results, suffix="_PARTIAL", frame_limit=frame_limit)
+                outputs, output_dir, video_stem = _write_primary_outputs(
+                    partial_results,
+                    suffix="_PARTIAL",
+                    frame_limit=frame_limit,
+                    fps_override=fps,
+                )
                 failed_at = time.perf_counter()
                 processing_seconds = max(failed_at - model_done, 1e-6)
                 profiling = {
@@ -669,8 +774,19 @@ def run_processing(session_id):
                     "ram_start": ram_start,
                     "ram_end": _get_ram_info(),
                 }
-                updated_config = {**session.config, "outputs": outputs, "profiling": profiling}
+                updated_config = {
+                    **session.config,
+                    "outputs": outputs,
+                    "profiling": profiling,
+                }
                 state.update_session(session_id, config=updated_config)
+                _start_csv_export(
+                    partial_results,
+                    outputs,
+                    output_dir,
+                    video_stem,
+                    suffix="_PARTIAL",
+                )
                 _set_status(session_id, "error", 0.9, "Processing failed; partial outputs saved")
             except Exception as save_exc:
                 error_log.write_text(traceback.format_exc())
@@ -684,7 +800,7 @@ def run_processing(session_id):
 
     try:
         _set_status(session_id, "saving", 0.85, "Writing outputs")
-        outputs = _write_outputs(results)
+        outputs, output_dir, video_stem = _write_primary_outputs(results, fps_override=fps)
 
         finished_at = time.perf_counter()
         processing_seconds = max(processing_done - model_done, 1e-6)
@@ -710,7 +826,11 @@ def run_processing(session_id):
         }
         updated_config = {**session.config, "outputs": outputs, "profiling": profiling}
         state.update_session(session_id, config=updated_config)
-        _set_status(session_id, "completed", 1.0, "Processing complete")
+        _start_csv_export(results, outputs, output_dir, video_stem)
+        message = "Processing complete"
+        if export_csv:
+            message = "Video ready. CSV exporting..."
+        _set_status(session_id, "completed", 1.0, message)
         _log_debug("processing complete")
     except Exception as exc:
         error_log.write_text(traceback.format_exc())
