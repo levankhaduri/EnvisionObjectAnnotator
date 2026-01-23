@@ -6,6 +6,8 @@ import {
   submitAnnotation,
   testMask,
   fetchFrameAnnotations,
+  fetchSession,
+  fetchFrameSharpness,
 } from "../api.js";
 
 export default function AnnotationPage() {
@@ -21,6 +23,9 @@ export default function AnnotationPage() {
   const [videoDims, setVideoDims] = useState(null);
   const [useThumbs, setUseThumbs] = useState(true);
   const [labelMode, setLabelMode] = useState(1);
+  const [multiReference, setMultiReference] = useState(false);
+  const [referenceFrames, setReferenceFrames] = useState([]);
+  const [frameSharpness, setFrameSharpness] = useState(null);
   const [status, setStatus] = useState("Load a session to begin annotating.");
   const [busy, setBusy] = useState(false);
   const [maskPreviewUrl, setMaskPreviewUrl] = useState("");
@@ -64,10 +69,42 @@ export default function AnnotationPage() {
   }, [sessionId]);
 
   useEffect(() => {
+    async function fetchSessionConfig() {
+      if (!sessionId) return;
+      try {
+        const session = await fetchSession(sessionId);
+        const config = session?.config || {};
+        const refs = Array.isArray(config.reference_frames)
+          ? config.reference_frames
+              .map((value) => Number(value))
+              .filter((value) => Number.isFinite(value))
+              .sort((a, b) => a - b)
+          : [];
+        setReferenceFrames(refs);
+        setMultiReference(Boolean(config.multi_reference));
+      } catch (err) {
+        setStatus(err.message);
+      }
+    }
+    fetchSessionConfig();
+  }, [sessionId]);
+
+  const restrictToReferences = multiReference && referenceFrames.length > 0;
+  const frameIndexMap = restrictToReferences ? referenceFrames : null;
+  const displayFrameCount = frameIndexMap ? frameIndexMap.length : frames.length;
+  const activeFrameIndex = frameIndexMap ? frameIndexMap[currentIndex] : currentIndex;
+
+  useEffect(() => {
+    if (displayFrameCount > 0 && currentIndex >= displayFrameCount) {
+      setCurrentIndex(0);
+    }
+  }, [displayFrameCount, currentIndex]);
+
+  useEffect(() => {
     async function hydrateFrame() {
       if (!sessionId) return;
       try {
-        const cacheKey = `${sessionId}:${currentIndex}`;
+        const cacheKey = `${sessionId}:${activeFrameIndex}`;
         const normalizeObjects = (objects) => {
           const normalized = {};
           Object.entries(objects || {}).forEach(([name, pts]) => {
@@ -75,7 +112,7 @@ export default function AnnotationPage() {
               ...p,
               fx: videoDims && videoDims.width ? p.x / videoDims.width : p.fx,
               fy: videoDims && videoDims.height ? p.y / videoDims.height : p.fy,
-              id: p.id || `${currentIndex}-${name}-${idx}-${p.x}-${p.y}-${p.label}`,
+              id: p.id || `${activeFrameIndex}-${name}-${idx}-${p.x}-${p.y}-${p.label}`,
             }));
           });
           return normalized;
@@ -97,7 +134,7 @@ export default function AnnotationPage() {
           return;
         }
 
-        const data = await fetchFrameAnnotations(sessionId, currentIndex);
+        const data = await fetchFrameAnnotations(sessionId, activeFrameIndex);
         const objects = data.objects || {};
         const normalized = normalizeObjects(objects);
         annotationsCache.current.set(cacheKey, normalized);
@@ -116,7 +153,26 @@ export default function AnnotationPage() {
       }
     }
     hydrateFrame();
-  }, [currentIndex, sessionId, videoDims]);
+  }, [currentIndex, sessionId, videoDims, activeFrameIndex]);
+
+  useEffect(() => {
+    let mounted = true;
+    async function loadSharpness() {
+      if (!sessionId || frames.length === 0) return;
+      try {
+        const data = await fetchFrameSharpness(sessionId, activeFrameIndex);
+        if (!mounted) return;
+        setFrameSharpness(Number.isFinite(data.sharpness) ? data.sharpness : null);
+      } catch (err) {
+        if (!mounted) return;
+        setFrameSharpness(null);
+      }
+    }
+    loadSharpness();
+    return () => {
+      mounted = false;
+    };
+  }, [sessionId, activeFrameIndex, frames.length]);
 
   function updateCache(frameIndex, updatedObjects) {
     if (!sessionId) return;
@@ -130,7 +186,7 @@ export default function AnnotationPage() {
     const updated = { ...frameObjects, [selectedObject]: updatedPoints };
     setFrameObjects(updated);
     setPoints(updatedPoints);
-    updateCache(currentIndex, updated);
+    updateCache(activeFrameIndex, updated);
     setShowPreview(false);
     setMaskPreviewUrl("");
   }
@@ -143,7 +199,7 @@ export default function AnnotationPage() {
     const updated = { ...frameObjects, [selectedObject]: updatedPoints };
     setFrameObjects(updated);
     setPoints(updatedPoints);
-    updateCache(currentIndex, updated);
+    updateCache(activeFrameIndex, updated);
     setShowPreview(false);
     setMaskPreviewUrl("");
   }
@@ -173,7 +229,7 @@ export default function AnnotationPage() {
     const updated = { ...frameObjects, [selectedObject]: next };
     setFrameObjects(updated);
     setPoints(next);
-    updateCache(currentIndex, updated);
+    updateCache(activeFrameIndex, updated);
     setShowPreview(false);
     setMaskPreviewUrl("");
   }
@@ -195,7 +251,7 @@ export default function AnnotationPage() {
       setBusy(true);
       await submitAnnotation({
         session_id: sessionId,
-        frame_index: currentIndex,
+        frame_index: activeFrameIndex,
         object_name: selectedObject,
         points: (frameObjects[selectedObject] || []).map(({ x, y, label }) => ({ x, y, label })),
       });
@@ -203,7 +259,7 @@ export default function AnnotationPage() {
         ...prev,
         [selectedObject]: (frameObjects[selectedObject] || []).length,
       }));
-      updateCache(currentIndex, frameObjects);
+      updateCache(activeFrameIndex, frameObjects);
       setStatus("Points saved.");
     } catch (err) {
       setStatus(err.message);
@@ -222,7 +278,7 @@ export default function AnnotationPage() {
       return;
     }
     const signature = buildMaskSignature(frameObjects[selectedObject]);
-    const cacheKey = `${sessionId}:${currentIndex}:${selectedObject}:${signature}`;
+    const cacheKey = `${sessionId}:${activeFrameIndex}:${selectedObject}:${signature}`;
     const cached = maskCache.current.get(cacheKey);
     if (cached) {
       setMaskPreviewUrl(`${API_BASE}${cached}?t=${Date.now()}`);
@@ -234,7 +290,7 @@ export default function AnnotationPage() {
       setBusy(true);
       const response = await testMask({
         session_id: sessionId,
-        frame_index: currentIndex,
+        frame_index: activeFrameIndex,
         object_name: selectedObject,
         points: (frameObjects[selectedObject] || []).map(({ x, y, label }) => ({ x, y, label })),
       });
@@ -269,7 +325,7 @@ export default function AnnotationPage() {
     setSavedCounts((prev) => ({ ...prev, [name]: 0 }));
     setSelectedObject(name);
     setPoints([]);
-    updateCache(currentIndex, updated);
+    updateCache(activeFrameIndex, updated);
     setObjectName("");
   }
 
@@ -279,13 +335,21 @@ export default function AnnotationPage() {
   const missingSteps = [];
   if (!sessionId) missingSteps.push("Load a session from the Config page.");
   if (frames.length === 0) missingSteps.push("Extract frames on the Config page.");
+  if (multiReference && referenceFrames.length === 0) {
+    missingSteps.push("No auto-picked reference frames yet. Re-extract with multi-reference enabled.");
+  }
   if (!hasSavedObject) missingSteps.push("Save points for at least one object.");
 
-  const frameName = frames[currentIndex];
+  const frameName = frames[activeFrameIndex];
   const frameUrl =
     sessionId && frameName
       ? `${API_BASE}${useThumbs ? "/frames/thumbs" : "/frames"}/${sessionId}/${frameName}`
       : "";
+  const frameCounterLabel = restrictToReferences
+    ? `Ref ${displayFrameCount ? currentIndex + 1 : 0}/${displayFrameCount} (Frame ${
+        frames.length ? activeFrameIndex + 1 : 0
+      })`
+    : `Frame ${frames.length ? currentIndex + 1 : 0} / ${frames.length}`;
 
   return (
     <div className="bg-white text-black">
@@ -406,25 +470,32 @@ export default function AnnotationPage() {
                     Prev Frame
                   </button>
                   <span className="text-sm text-gray-500">
-                    Frame {frames.length ? currentIndex + 1 : 0} / {frames.length}
+                    {frameCounterLabel}
                   </span>
                   <button
                     className="btn-secondary"
-                    onClick={() => setCurrentIndex((prev) => Math.min(frames.length - 1, prev + 1))}
-                    disabled={currentIndex >= frames.length - 1}
+                    onClick={() => setCurrentIndex((prev) => Math.min(displayFrameCount - 1, prev + 1))}
+                    disabled={currentIndex >= displayFrameCount - 1}
                   >
                     Next Frame
                   </button>
                 </div>
+                {frameSharpness !== null && (
+                  <div className="text-xs text-gray-500 mt-2">
+                    Sharpness: {frameSharpness.toFixed(2)}
+                  </div>
+                )}
                 <div className="mt-4">
-                  <label className="text-sm text-gray-500 block mb-2">Jump to frame</label>
+                  <label className="text-sm text-gray-500 block mb-2">
+                    {restrictToReferences ? "Jump to reference frame" : "Jump to frame"}
+                  </label>
                   <input
                     type="range"
                     min="0"
-                    max={Math.max(0, frames.length - 1)}
+                    max={Math.max(0, displayFrameCount - 1)}
                     value={currentIndex}
                     onChange={(event) => setCurrentIndex(Number(event.target.value))}
-                    disabled={frames.length === 0}
+                    disabled={displayFrameCount === 0}
                   />
                 </div>
               </div>

@@ -257,6 +257,8 @@ class ImprovedTargetOverlapTracker:
 
     def register_target(self, obj_id, obj_name):
         """Register target objects."""
+        if obj_id in self.target_objects:
+            return True
         if "target" in obj_name.lower():
             self.target_objects[obj_id] = obj_name
             self.overlap_events[obj_id] = []
@@ -598,6 +600,26 @@ class UltraOptimizedProcessor:
             return self.frame_index_map[local_idx]
         return local_idx
 
+    def _resolve_end_frame(self, end_frame):
+        if end_frame is None:
+            return None
+        try:
+            end_frame = int(end_frame)
+        except (TypeError, ValueError):
+            return None
+        total_frames = len(self.frame_names)
+        if not self.frame_index_map:
+            return max(0, min(end_frame, total_frames - 1))
+        last_idx = None
+        for idx, global_idx in enumerate(self.frame_index_map):
+            if global_idx <= end_frame:
+                last_idx = idx
+            else:
+                break
+        if last_idx is None:
+            return 0
+        return last_idx
+
     def _compute_roi_box(self, points_dict, frame_width, frame_height):
         if not self.roi_enabled:
             return None
@@ -784,7 +806,7 @@ class UltraOptimizedProcessor:
                 )
             )
 
-    def _fill_missing_frames(self, results):
+    def _fill_missing_frames(self, results, max_frame=None):
         if not self.frame_index_map:
             return results
         stride = None
@@ -841,17 +863,32 @@ class UltraOptimizedProcessor:
 
         last_idx = processed[-1]
         full_last = len(self.full_frame_names) - 1
+        if max_frame is not None:
+            try:
+                full_last = min(full_last, int(max_frame))
+            except (TypeError, ValueError):
+                pass
         if last_idx < full_last:
             prev_masks = results.get(last_idx, {})
             for missing in range(last_idx + 1, full_last + 1):
                 results[missing] = prev_masks
         return results
 
-    def process_video_with_memory_management(self, points_dict, labels_dict, object_names, debug=True):
+    def process_video_with_memory_management(
+        self,
+        points_dict,
+        labels_dict,
+        object_names,
+        debug=True,
+        end_frame=None,
+        seed_masks=None,
+        roi_points_dict=None,
+        finalize_events=True,
+    ):
         """Process video with ultra memory management and improved overlap detection."""
         last_exc = None
         self.partial_results = {}
-        self._prepare_frame_source(points_dict)
+        self._prepare_frame_source(roi_points_dict or points_dict)
         try:
             if debug:
                 self._log(
@@ -875,10 +912,26 @@ class UltraOptimizedProcessor:
                             % (attempt + 1, self.batch_size, getattr(self.predictor, "device", "unknown"))
                         )
                     if attempt == 0:
-                        return self._process_standard_optimized(points_dict, labels_dict, object_names, debug)
+                        return self._process_standard_optimized(
+                            points_dict,
+                            labels_dict,
+                            object_names,
+                            debug,
+                            end_frame=end_frame,
+                            seed_masks=seed_masks,
+                            finalize_events=finalize_events,
+                        )
                     if attempt == 1:
                         self.batch_size = self.batch_size // 2
-                        return self._process_standard_optimized(points_dict, labels_dict, object_names, debug)
+                        return self._process_standard_optimized(
+                            points_dict,
+                            labels_dict,
+                            object_names,
+                            debug,
+                            end_frame=end_frame,
+                            seed_masks=seed_masks,
+                            finalize_events=finalize_events,
+                        )
                     return self._process_cpu_fallback(points_dict, labels_dict, object_names, debug)
                 except RuntimeError as exc:
                     if "out of memory" in str(exc).lower():
@@ -903,7 +956,16 @@ class UltraOptimizedProcessor:
         finally:
             ultra_cleanup_memory()
 
-    def _process_standard_optimized(self, points_dict, labels_dict, object_names, debug):
+    def _process_standard_optimized(
+        self,
+        points_dict,
+        labels_dict,
+        object_names,
+        debug,
+        end_frame=None,
+        seed_masks=None,
+        finalize_events=True,
+    ):
         self._prepare_frame_source(points_dict)
         image_size = getattr(self.predictor, "image_size", 1024)
         bytes_per_frame = image_size * image_size * 3 * 4
@@ -955,7 +1017,11 @@ class UltraOptimizedProcessor:
         last_memory_check = 0
 
         start_frame = max(0, min(self.reference_frame, len(self.frame_names) - 1))
-        total_to_process = max(0, len(self.frame_names) - start_frame)
+        max_local_frame = len(self.frame_names) - 1
+        end_frame_local = self._resolve_end_frame(end_frame)
+        if end_frame_local is not None:
+            max_local_frame = max(start_frame, min(end_frame_local, max_local_frame))
+        total_to_process = max(0, max_local_frame - start_frame + 1)
         chunk_size = None
         if self.chunk_size is not None:
             try:
@@ -1051,6 +1117,23 @@ class UltraOptimizedProcessor:
 
         with tqdm(total=total_to_process, desc="Processing frames") as pbar:
             if chunk_size is None:
+                if seed_masks:
+                    for obj_id, mask in seed_masks.items():
+                        if mask is None:
+                            continue
+                        try:
+                            m = mask[0] if hasattr(mask, "shape") and len(mask.shape) == 3 else mask
+                            self.predictor.add_new_mask(
+                                inference_state=inference_state,
+                                frame_idx=start_frame,
+                                obj_id=obj_id,
+                                mask=m,
+                            )
+                        except Exception as exc:
+                            if debug:
+                                self._log("seed mask failed: obj_id=%s error=%s" % (obj_id, exc))
+                                self._log(traceback.format_exc())
+                            continue
                 for obj_id in points_dict:
                     try:
                         points = np.array(points_dict[obj_id], dtype=np.float32)
@@ -1090,9 +1173,9 @@ class UltraOptimizedProcessor:
                 if debug:
                     self._log("chunking enabled: chunk_size=%s chunk_overlap=%s" % (chunk_size, chunk_overlap))
                 next_start = start_frame
-                seed_masks = None
+                seed_masks = seed_masks or None
                 chunk_index = 0
-                while next_start < len(self.frame_names):
+                while next_start <= max_local_frame:
                     if chunk_index > 0:
                         inference_state = self.predictor.init_state(
                             video_path=self.video_dir,
@@ -1105,6 +1188,23 @@ class UltraOptimizedProcessor:
                         ultra_cleanup_memory()
                     seed_frame = start_frame if chunk_index == 0 else max(start_frame, next_start - chunk_overlap)
                     if chunk_index == 0:
+                        if seed_masks:
+                            for obj_id, mask in seed_masks.items():
+                                if mask is None:
+                                    continue
+                                try:
+                                    m = mask[0] if hasattr(mask, "shape") and len(mask.shape) == 3 else mask
+                                    self.predictor.add_new_mask(
+                                        inference_state=inference_state,
+                                        frame_idx=seed_frame,
+                                        obj_id=obj_id,
+                                        mask=m,
+                                    )
+                                except Exception as exc:
+                                    if debug:
+                                        self._log("seed mask failed: obj_id=%s error=%s" % (obj_id, exc))
+                                        self._log(traceback.format_exc())
+                                    continue
                         for obj_id in points_dict:
                             try:
                                 points = np.array(points_dict[obj_id], dtype=np.float32)
@@ -1149,12 +1249,16 @@ class UltraOptimizedProcessor:
                                     self._log(traceback.format_exc())
                                 continue
 
-                    remaining = len(self.frame_names) - next_start
+                    remaining = max_local_frame - next_start + 1
+                    if remaining <= 0:
+                        break
                     desired_new = min(chunk_size, remaining)
                     if chunk_index == 0:
-                        max_track = max(0, desired_new - 1)
+                        max_track = max(0, min(desired_new - 1, max_local_frame - seed_frame))
                     else:
-                        max_track = max(0, desired_new + chunk_overlap - 1)
+                        max_track = max(
+                            0, min(desired_new + chunk_overlap - 1, max_local_frame - seed_frame)
+                        )
 
                     last_processed, seed_masks = _process_frames(
                         inference_state,
@@ -1164,16 +1268,22 @@ class UltraOptimizedProcessor:
                     )
                     self.predictor.reset_state(inference_state)
                     ultra_cleanup_memory()
-                    if last_processed is None:
+                    if last_processed is None or last_processed >= max_local_frame:
                         break
                     next_start = last_processed + 1
                     chunk_index += 1
 
-        if targets_found:
+        max_global_frame = None
+        if end_frame_local is not None:
+            max_global_frame = self._map_frame_idx(max_local_frame)
+
+        if targets_found and finalize_events:
             last_frame = max(results.keys()) if results else 0
+            if max_global_frame is not None:
+                last_frame = min(last_frame, max_global_frame)
             self.overlap_tracker.finalize_tracking(last_frame)
 
-        results = self._fill_missing_frames(results)
+        results = self._fill_missing_frames(results, max_frame=max_global_frame)
         self.frame_analyses = frame_analyses
         if chunk_size is None:
             self.predictor.reset_state(inference_state)

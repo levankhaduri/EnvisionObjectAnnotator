@@ -8,6 +8,7 @@ import json
 import cv2
 import math
 import mimetypes
+import numpy as np
 
 from .schemas import (
     SessionCreate,
@@ -65,6 +66,218 @@ def _probe_video_fps(video_path):
         if fps and fps > 0 and math.isfinite(fps):
             return fps
     return None
+
+
+class EdgeRiseSharpness:
+    def __init__(self, max_samples=600, radius=4, edge_percentile=90):
+        self.max_samples = max_samples
+        self.radius = radius
+        self.edge_percentile = edge_percentile
+
+    @staticmethod
+    def _bilinear_sample(img, x, y):
+        x0 = int(math.floor(x))
+        y0 = int(math.floor(y))
+        x1 = x0 + 1
+        y1 = y0 + 1
+        h, w = img.shape
+        if x0 < 0 or y0 < 0 or x1 >= w or y1 >= h:
+            return None
+        dx = x - x0
+        dy = y - y0
+        v00 = img[y0, x0]
+        v10 = img[y0, x1]
+        v01 = img[y1, x0]
+        v11 = img[y1, x1]
+        return (
+            v00 * (1.0 - dx) * (1.0 - dy)
+            + v10 * dx * (1.0 - dy)
+            + v01 * (1.0 - dx) * dy
+            + v11 * dx * dy
+        )
+
+    def compute(self, img):
+        if img is None or img.size == 0:
+            return None
+        img_f = img.astype(np.float32)
+        gx = cv2.Sobel(img_f, cv2.CV_32F, 1, 0, ksize=3)
+        gy = cv2.Sobel(img_f, cv2.CV_32F, 0, 1, ksize=3)
+        mag = cv2.magnitude(gx, gy)
+        if mag.size == 0:
+            return 0.0
+        threshold = float(np.percentile(mag, self.edge_percentile))
+        if not math.isfinite(threshold) or threshold <= 0:
+            threshold = float(np.max(mag))
+        ys, xs = np.where(mag >= max(threshold, 1e-6))
+        if ys.size == 0:
+            return 0.0
+        points = np.column_stack((ys, xs))
+        if points.shape[0] > self.max_samples:
+            step = int(math.ceil(points.shape[0] / self.max_samples))
+            points = points[::step]
+
+        rise_distances = []
+        radius = self.radius
+        steps = radius * 2 + 1
+        step_size = 2.0 * radius / max(1, steps - 1)
+        h, w = img.shape
+        for y, x in points:
+            dx = float(gx[y, x])
+            dy = float(gy[y, x])
+            norm = math.hypot(dx, dy)
+            if norm <= 1e-6:
+                continue
+            ux = dx / norm
+            uy = dy / norm
+            x0 = x - ux * radius
+            x1 = x + ux * radius
+            y0 = y - uy * radius
+            y1 = y + uy * radius
+            if (
+                x0 < 0
+                or x0 >= w - 1
+                or x1 < 0
+                or x1 >= w - 1
+                or y0 < 0
+                or y0 >= h - 1
+                or y1 < 0
+                or y1 >= h - 1
+            ):
+                continue
+            profile = []
+            for i in range(steps):
+                t = -radius + i * step_size
+                fx = x + ux * t
+                fy = y + uy * t
+                sample = self._bilinear_sample(img_f, fx, fy)
+                if sample is None:
+                    profile = []
+                    break
+                profile.append(sample)
+            if not profile:
+                continue
+            if profile[0] > profile[-1]:
+                profile = profile[::-1]
+            min_v = min(profile)
+            max_v = max(profile)
+            span = max_v - min_v
+            if span <= 1.0:
+                continue
+            low = min_v + 0.1 * span
+            high = min_v + 0.9 * span
+            idx_low = next((i for i, v in enumerate(profile) if v >= low), None)
+            idx_high = next((i for i, v in enumerate(profile) if v >= high), None)
+            if idx_low is None or idx_high is None or idx_high <= idx_low:
+                continue
+            rise_distances.append((idx_high - idx_low) * step_size)
+
+        if not rise_distances:
+            return 0.0
+        avg_rise = float(np.mean(rise_distances))
+        return 100.0 / (avg_rise + 1e-6)
+
+
+EDGE_RISE_SHARPNESS = EdgeRiseSharpness()
+
+
+def _auto_pick_reference_frames(
+    frames_dir,
+    frame_count,
+    sample_stride,
+    threshold,
+    min_refs,
+    max_refs,
+):
+    if frame_count <= 0:
+        return []
+    sample_stride = max(1, int(sample_stride))
+    threshold = float(threshold)
+    min_refs = max(1, int(min_refs))
+    max_refs = max(min_refs, int(max_refs))
+
+    metrics = []
+    prev = None
+    for frame_idx in range(0, frame_count, sample_stride):
+        frame_path = frames_dir / f"{frame_idx:05d}.jpg"
+        if not frame_path.exists():
+            continue
+        img = cv2.imread(str(frame_path), cv2.IMREAD_GRAYSCALE)
+        if img is None:
+            continue
+        small = cv2.resize(img, (64, 64), interpolation=cv2.INTER_AREA)
+        if prev is None:
+            prev = small
+        diff = float(np.mean(np.abs(small.astype(np.float32) - prev.astype(np.float32))))
+        prev = small
+        sharpness = float(EDGE_RISE_SHARPNESS.compute(img))
+        edges = cv2.Canny(img, 60, 120)
+        edge_density = float(np.mean(edges) / 255.0)
+        brightness = float(np.mean(img))
+        metrics.append(
+            {
+                "idx": frame_idx,
+                "diff": diff,
+                "sharpness": sharpness,
+                "edge": edge_density,
+                "brightness": brightness,
+            }
+        )
+
+    if not metrics:
+        return []
+
+    sharp_values = [item["sharpness"] for item in metrics]
+    blur_threshold = float(np.percentile(sharp_values, 30)) if sharp_values else 0.0
+    sharp_scale = float(np.percentile(sharp_values, 90)) if sharp_values else 1.0
+    if not math.isfinite(sharp_scale) or sharp_scale <= 0:
+        sharp_scale = 1.0
+
+    def _score(item):
+        diff_norm = min(1.0, item["diff"] / 255.0)
+        edge_norm = min(1.0, item["edge"])
+        sharp_norm = min(1.0, item["sharpness"] / sharp_scale)
+        return diff_norm * 0.5 + edge_norm * 0.3 + sharp_norm * 0.2
+
+    candidates = [
+        item
+        for item in metrics
+        if item["diff"] >= threshold and item["sharpness"] >= blur_threshold and 15.0 <= item["brightness"] <= 240.0
+    ]
+    if not candidates:
+        candidates = [
+            item for item in metrics if item["sharpness"] >= blur_threshold and 15.0 <= item["brightness"] <= 240.0
+        ]
+    if not candidates:
+        candidates = metrics[:]
+
+    candidates.sort(key=_score, reverse=True)
+    selected = []
+    min_gap = max(1, sample_stride * 4)
+    for item in candidates:
+        idx = item["idx"]
+        if len(selected) >= max_refs:
+            break
+        if any(abs(idx - picked) < min_gap for picked in selected):
+            continue
+        selected.append(idx)
+
+    if len(selected) < min_refs:
+        for item in candidates:
+            idx = item["idx"]
+            if len(selected) >= min_refs:
+                break
+            if idx in selected:
+                continue
+            selected.append(idx)
+
+    return sorted(set(selected))
+
+
+def _compute_frame_sharpness(frame_path):
+    img = cv2.imread(str(frame_path), cv2.IMREAD_GRAYSCALE)
+    if img is None:
+        return None
+    return float(EDGE_RISE_SHARPNESS.compute(img))
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 UPLOAD_DIR = BASE_DIR / "data" / "uploads"
@@ -177,12 +390,57 @@ def extract_frames(payload: FrameExtractionRequest):
         print(f"[thumbs] generation failed: {thumb_result.stderr.strip()}")
 
     fps = _probe_video_fps(session.video_path)
+    config = session.config or {}
     if fps:
-        config = session.config or {}
         updated_config = {**config, "video_fps": float(fps)}
-        state.update_session(payload.session_id, config=updated_config)
+        session = state.update_session(payload.session_id, config=updated_config)
+        config = session.config or updated_config
 
-    return {"status": "ok", "frames_dir": str(frames_dir)}
+    auto_reference = bool(payload.auto_reference)
+    auto_frames = []
+    if auto_reference:
+        config = session.config or {}
+        frame_files = sorted([p.name for p in frames_dir.glob("*.jpg")])
+        frame_count = len(frame_files)
+        sample_stride = payload.auto_reference_stride
+        if sample_stride is None or sample_stride <= 0:
+            sample_stride = max(1, int(round(fps))) if fps else 30
+        threshold = payload.auto_reference_threshold
+        if threshold is None:
+            threshold = 12.0
+        min_refs = payload.auto_reference_min
+        if min_refs is None:
+            min_refs = 2
+        max_refs = payload.auto_reference_max
+        if max_refs is None:
+            if fps and frame_count:
+                minutes = max(1, int((frame_count / fps) // 60))
+                max_refs = min(8, max(min_refs, minutes + 1))
+            else:
+                max_refs = min(8, max(min_refs, 4))
+
+        auto_frames = _auto_pick_reference_frames(
+            frames_dir=frames_dir,
+            frame_count=frame_count,
+            sample_stride=sample_stride,
+            threshold=threshold,
+            min_refs=min_refs,
+            max_refs=max_refs,
+        )
+        if auto_frames:
+            updated_config = {
+                **config,
+                "reference_frames": auto_frames,
+                "reference_frame": auto_frames[0],
+                "multi_reference": True,
+            }
+            state.update_session(payload.session_id, config=updated_config)
+
+    return {
+        "status": "ok",
+        "frames_dir": str(frames_dir),
+        "auto_reference_frames": auto_frames,
+    }
 
 
 @app.get("/frames/list/{session_id}", response_model=FrameListResponse)
@@ -228,6 +486,25 @@ def get_frame(session_id: str, frame_name: str):
         raise HTTPException(status_code=404, detail="Frame not found")
 
     return FileResponse(frame_path)
+
+
+@app.get("/frames/sharpness/{session_id}/{frame_index}")
+def get_frame_sharpness(session_id: str, frame_index: int):
+    try:
+        state.get_session(session_id)
+    except KeyError:
+        raise HTTPException(status_code=404, detail="Session not found")
+
+    frames_dir = SESSIONS_DIR / session_id / "frames"
+    frame_path = frames_dir / f"{frame_index:05d}.jpg"
+    if not frame_path.exists():
+        raise HTTPException(status_code=404, detail="Frame not found")
+
+    sharpness = _compute_frame_sharpness(frame_path)
+    if sharpness is None:
+        raise HTTPException(status_code=500, detail="Failed to compute sharpness")
+
+    return {"frame_index": frame_index, "sharpness": sharpness}
 
 
 @app.get("/frames/thumbs/{session_id}/{frame_name}")
@@ -301,7 +578,26 @@ def add_annotation_points(payload: AnnotationPayload):
     ]
     frame_file.write_text(json.dumps(existing, indent=2))
     config = session.config or {}
-    if config.get("reference_frame") != payload.frame_index:
+    reference_frames = config.get("reference_frames")
+    if config.get("multi_reference"):
+        frames = []
+        if isinstance(reference_frames, list):
+            for f in reference_frames:
+                try:
+                    frames.append(int(f))
+                except (TypeError, ValueError):
+                    continue
+        if payload.frame_index not in frames:
+            frames.append(payload.frame_index)
+        frames = sorted(set(frames))
+        updated_config = {
+            **config,
+            "reference_frames": frames,
+            "reference_frame": frames[0] if frames else payload.frame_index,
+        }
+        state.update_session(payload.session_id, config=updated_config)
+        reference_frames = frames
+    elif config.get("reference_frame") != payload.frame_index:
         updated_config = {**config, "reference_frame": payload.frame_index}
         state.update_session(payload.session_id, config=updated_config)
 
@@ -312,6 +608,7 @@ def add_annotation_points(payload: AnnotationPayload):
         "object": payload.object_name,
         "path": str(frame_file),
         "reference_frame": payload.frame_index,
+        "reference_frames": reference_frames,
     }
 
 
