@@ -1,14 +1,6 @@
 import React, { useEffect, useRef, useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
-import {
-  createSession,
-  uploadVideo,
-  updateConfig,
-  extractFrames,
-  fetchModels,
-  listFrames,
-  fetchFrameSharpness,
-} from "../api.js";
+import { createSession, uploadVideo, updateConfig, extractFrames, fetchModels, listFrames } from "../api.js";
 
 export default function ConfigPage() {
   const [sessionId, setSessionId] = useState("");
@@ -27,7 +19,6 @@ export default function ConfigPage() {
   const [chunkOverlap, setChunkOverlap] = useState("1");
   const [compressMode, setCompressMode] = useState("auto");
   const [useMps, setUseMps] = useState(false);
-  const [multiReference, setMultiReference] = useState(false);
   const [exportVideo, setExportVideo] = useState(true);
   const [exportElan, setExportElan] = useState(true);
   const [exportCsv, setExportCsv] = useState(true);
@@ -46,8 +37,6 @@ export default function ConfigPage() {
   ]);
   const [framesReady, setFramesReady] = useState(false);
   const [frameCount, setFrameCount] = useState(0);
-  const [autoReferenceFrames, setAutoReferenceFrames] = useState([]);
-  const [autoReferenceSharpness, setAutoReferenceSharpness] = useState({});
   const [status, setStatus] = useState("Ready to start.");
   const [busy, setBusy] = useState(false);
   const inputRef = useRef(null);
@@ -182,7 +171,7 @@ export default function ConfigPage() {
       setStatus("Uploading video...");
       await uploadVideo(sessionId, videoFile);
       setStatus("Extracting frames...");
-      const extractResponse = await extractFrames(sessionId, 2, { auto_reference: multiReference });
+      await extractFrames(sessionId);
       try {
         const data = await listFrames(sessionId);
         const count = data.frame_count || 0;
@@ -191,32 +180,7 @@ export default function ConfigPage() {
       } catch (err) {
         setFramesReady(true);
       }
-      if (extractResponse?.auto_reference_frames?.length) {
-        const picked = extractResponse.auto_reference_frames.slice();
-        setAutoReferenceFrames(picked);
-        setStatus(`Frames ready. Auto-picked ${picked.length} reference frames.`);
-        try {
-          const sharpnessEntries = await Promise.all(
-            picked.map(async (frameIndex) => {
-              const data = await fetchFrameSharpness(sessionId, frameIndex);
-              return [frameIndex, data.sharpness];
-            })
-          );
-          const sharpnessMap = {};
-          sharpnessEntries.forEach(([frameIndex, sharpness]) => {
-            if (Number.isFinite(sharpness)) {
-              sharpnessMap[frameIndex] = sharpness;
-            }
-          });
-          setAutoReferenceSharpness(sharpnessMap);
-        } catch (err) {
-          setAutoReferenceSharpness({});
-        }
-      } else {
-        setAutoReferenceFrames([]);
-        setAutoReferenceSharpness({});
-        setStatus("Frames ready. Save configuration to continue.");
-      }
+      setStatus("Frames ready. Save configuration to continue.");
     } catch (err) {
       setStatus(err.message);
     } finally {
@@ -268,7 +232,6 @@ export default function ConfigPage() {
         export_video: exportVideo,
         export_elan: exportElan,
         export_csv: exportCsv,
-        multi_reference: multiReference,
         output_dir: outputDir || null,
         chunk_size: toOptionalInt(chunkSize),
         chunk_seconds: toOptionalNumber(chunkSeconds),
@@ -603,27 +566,6 @@ export default function ConfigPage() {
                 </button>
                 {showAdvanced && (
                   <>
-                    <div className="space-y-2">
-                      <label className="flex items-center gap-2 text-sm">
-                        <input
-                          type="checkbox"
-                          checked={multiReference}
-                          onChange={(event) => setMultiReference(event.target.checked)}
-                        />
-                        Multi-reference frames (experimental)
-                        <span
-                          className="info-pill"
-                          data-tooltip="Uses multiple annotated frames and stitches results across segments."
-                          aria-label="Uses multiple annotated frames and stitches results across segments."
-                          tabIndex={0}
-                        >
-                          i
-                        </span>
-                      </label>
-                      <p className="text-xs text-gray-500">
-                        Auto-picks frames right after extraction. Any frame you save points on also becomes a reference.
-                      </p>
-                    </div>
                     <div className="grid grid-cols-2 gap-3">
                   <div>
                     <label className="block text-sm font-medium mb-2">Tune Target (0–1)</label>
@@ -750,21 +692,6 @@ export default function ConfigPage() {
                   )}
                 </div>
                 <p className="text-sm text-gray-500 mt-3">{status}</p>
-                {autoReferenceFrames.length > 0 && (
-                  <div className="status-box mt-3">
-                    <div className="text-sm font-semibold mb-2">Auto-picked reference frames</div>
-                    <div className="text-xs text-gray-600 space-y-1">
-                      {autoReferenceFrames.map((frameIndex) => (
-                        <div key={frameIndex}>
-                          Frame {frameIndex + 1}
-                          {Number.isFinite(autoReferenceSharpness[frameIndex])
-                            ? ` - sharpness ${autoReferenceSharpness[frameIndex].toFixed(2)}`
-                            : ""}
-                        </div>
-                      ))}
-                    </div>
-                  </div>
-                )}
                 {missingSteps.length > 0 && (
                   <div className="status-box error">
                     <div className="font-semibold mb-1">Complete before continuing:</div>

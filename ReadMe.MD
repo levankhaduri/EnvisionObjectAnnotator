@@ -57,13 +57,6 @@ cd EnvisionObjectAnnotator
 - **Node.js 18+** (for the React UI)
 - **ffmpeg** (for frame extraction)
 
-**Windows note:** use `.\.venv\Scripts\python.exe` and `.\.venv\Scripts\pip.exe` instead of `./.venv/bin/...`.
-
-**ffmpeg install (Windows):**
-1) Download from https://ffmpeg.org/download.html
-2) Add the `bin` folder to your PATH
-3) Verify: `ffmpeg -version`
-
 ### 3. Install backend dependencies (FastAPI + SAM2)
 ```bash
 cd backend
@@ -92,10 +85,6 @@ cd ../checkpoints
 ./download_ckpts.sh
 ```
 
-**Checkpoint paths (expected by the app):**
-- `checkpoints/` for SAM2
-- `EdgeTAM/checkpoints/` for EdgeTAM (place `edgetam.pt` here)
-
 ### 4. Install frontend dependencies (React)
 ```bash
 cd ../frontend
@@ -112,24 +101,6 @@ cd ../backend
 cd ../frontend
 npm run dev
 ```
-
-**Windows run:**
-```bash
-cd backend
-.\.venv\Scripts\uvicorn app.main:app --reload
-
-cd ..\frontend
-npm run dev
-```
-
-### 6. Quick sanity check
-- Open `http://localhost:5173`
-- Create session, upload a short video, extract frames
-- Pick a frame, add a point, run processing
-
-### GPU / CUDA (optional)
-- If you have an NVIDIA GPU, install a CUDA-enabled PyTorch build.
-- Match your CUDA version to the PyTorch install guide: https://pytorch.org/get-started/locally/
 
 ### Notes
 - The **original Tk GUI** still exists in `Script/runEnvisionObjectAnnotator.py`, but the primary flow now runs through the **React + FastAPI** app.

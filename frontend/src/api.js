@@ -37,11 +37,11 @@ export async function updateConfig(payload) {
   return res.json();
 }
 
-export async function extractFrames(sessionId, quality = 2, options = {}) {
+export async function extractFrames(sessionId, quality = 2) {
   const res = await fetch(`${API_BASE}/frames/extract`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ session_id: sessionId, quality, ...options }),
+    body: JSON.stringify({ session_id: sessionId, quality }),
   });
   if (!res.ok) {
     throw new Error("Failed to extract frames");
@@ -89,14 +89,6 @@ export async function fetchFrameAnnotations(sessionId, frameIndex) {
   return res.json();
 }
 
-export async function fetchFrameSharpness(sessionId, frameIndex) {
-  const res = await fetch(`${API_BASE}/frames/sharpness/${sessionId}/${frameIndex}`);
-  if (!res.ok) {
-    throw new Error("Failed to load sharpness");
-  }
-  return res.json();
-}
-
 export async function startProcessing(sessionId) {
   const res = await fetch(`${API_BASE}/processing/start`, {
     method: "POST",
@@ -133,14 +125,6 @@ export async function fetchModels() {
   const res = await fetch(`${API_BASE}/models`);
   if (!res.ok) {
     throw new Error("Failed to fetch models");
-  }
-  return res.json();
-}
-
-export async function fetchSession(sessionId) {
-  const res = await fetch(`${API_BASE}/sessions/${sessionId}`);
-  if (!res.ok) {
-    throw new Error("Failed to fetch session");
   }
   return res.json();
 }

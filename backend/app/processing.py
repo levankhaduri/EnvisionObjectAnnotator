@@ -20,7 +20,6 @@ from .pipeline import (
     setup_device_ultra_optimized,
     configure_torch_ultra_conservative,
     UltraOptimizedProcessor,
-    ImprovedTargetOverlapTracker,
     get_video_fps,
     get_gpu_memory_info,
 )
@@ -359,25 +358,12 @@ class HeadlessProcessor:
     def __init__(self, processor):
         self._processor = processor
 
-    def process(
-        self,
-        points_dict,
-        labels_dict,
-        object_names,
-        end_frame=None,
-        seed_masks=None,
-        roi_points_dict=None,
-        finalize_events=True,
-    ):
+    def process(self, points_dict, labels_dict, object_names):
         return self._processor.process_video_with_memory_management(
             points_dict,
             labels_dict,
             object_names,
             debug=True,
-            end_frame=end_frame,
-            seed_masks=seed_masks,
-            roi_points_dict=roi_points_dict,
-            finalize_events=finalize_events,
         )
 
     def get_partial_results(self):
@@ -414,82 +400,35 @@ def _set_status(session_id, status, progress, message):
     )
 
 
-def _read_frame_annotations(session_id, frame_index):
+def _load_reference_annotations(session_id, reference_frame):
     annotations_dir = SESSIONS_DIR / session_id / "annotations"
-    frame_file = annotations_dir / f"frame_{frame_index:05d}.json"
+    frame_file = annotations_dir / f"frame_{reference_frame:05d}.json"
     if not frame_file.exists():
-        return {}
+        raise FileNotFoundError("No annotations found for reference frame")
+
     data = json.loads(frame_file.read_text())
-    return data.get("objects", {}) or {}
+    objects = data.get("objects", {})
+    if not objects:
+        raise ValueError("No objects annotated")
 
-
-def _build_points_from_objects(objects, name_to_id, object_names, roi_points_dict=None):
     points_dict = {}
     labels_dict = {}
-    for name, points in objects.items():
+    object_names = {}
+    for idx, (name, points) in enumerate(objects.items(), start=1):
         if not points:
             continue
         coords = [[p["x"], p["y"]] for p in points]
         labels = [p["label"] for p in points]
         if len(coords) != len(labels) or not coords:
             continue
-        obj_id = name_to_id.get(name)
-        if obj_id is None:
-            obj_id = len(name_to_id) + 1
-            name_to_id[name] = obj_id
-            object_names[obj_id] = name
-        points_dict[obj_id] = coords
-        labels_dict[obj_id] = labels
-        if roi_points_dict is not None:
-            roi_points_dict.setdefault(obj_id, []).extend(coords)
-    return points_dict, labels_dict
-
-
-def _load_reference_annotations(session_id, reference_frame):
-    objects = _read_frame_annotations(session_id, reference_frame)
-    if not objects:
-        raise FileNotFoundError("No annotations found for reference frame")
-
-    name_to_id = {}
-    object_names = {}
-    roi_points_dict = {}
-    points_dict, labels_dict = _build_points_from_objects(
-        objects, name_to_id, object_names, roi_points_dict=roi_points_dict
-    )
+        object_names[idx] = name
+        points_dict[idx] = coords
+        labels_dict[idx] = labels
 
     if not points_dict:
         raise ValueError("No valid points found for reference frame")
 
-    return points_dict, labels_dict, object_names, roi_points_dict
-
-
-def _load_reference_annotations_multi(session_id, reference_frames):
-    name_to_id = {}
-    object_names = {}
-    roi_points_dict = {}
-    entries = []
-
-    for frame_index in reference_frames:
-        objects = _read_frame_annotations(session_id, frame_index)
-        if not objects:
-            continue
-        points_dict, labels_dict = _build_points_from_objects(
-            objects, name_to_id, object_names, roi_points_dict=roi_points_dict
-        )
-        if points_dict:
-            entries.append(
-                {
-                    "frame": frame_index,
-                    "points": points_dict,
-                    "labels": labels_dict,
-                }
-            )
-
-    if not entries:
-        raise ValueError("No valid points found for reference frames")
-
-    entries = sorted(entries, key=lambda item: item["frame"])
-    return entries, object_names, roi_points_dict
+    return points_dict, labels_dict, object_names
 
 
 def run_processing(session_id):
@@ -561,10 +500,6 @@ def run_processing(session_id):
     export_elan = bool(config.get("export_elan", True))
     export_csv = bool(config.get("export_csv", True))
     reference_frame = int(config.get("reference_frame", 0))
-    multi_reference = bool(config.get("multi_reference", False))
-    reference_frames = config.get("reference_frames") if multi_reference else None
-    if reference_frames is not None and not isinstance(reference_frames, list):
-        reference_frames = None
     frame_stride = config.get("frame_stride")
     frame_interpolation = config.get("frame_interpolation")
     roi_enabled = bool(config.get("roi_enabled", False))
@@ -592,49 +527,17 @@ def run_processing(session_id):
         % (model_key, reference_frame, batch_size, frame_count)
     )
 
-    reference_entries = None
-    points_dict = {}
-    labels_dict = {}
-    object_names = {}
-    roi_points_dict = {}
     try:
         _set_status(session_id, "initializing", 0.05, "Loading annotations")
-        if multi_reference and reference_frames:
-            sanitized = []
-            for f in reference_frames:
-                try:
-                    sanitized.append(int(f))
-                except (TypeError, ValueError):
-                    continue
-            reference_frames = sorted(set(sanitized))
-        if multi_reference and reference_frames:
-            reference_entries, object_names, roi_points_dict = _load_reference_annotations_multi(
-                session_id, reference_frames
-            )
-        else:
-            points_dict, labels_dict, object_names, roi_points_dict = _load_reference_annotations(
-                session_id, reference_frame
-            )
-            reference_entries = [
-                {
-                    "frame": reference_frame,
-                    "points": points_dict,
-                    "labels": labels_dict,
-                }
-            ]
+        points_dict, labels_dict, object_names = _load_reference_annotations(session_id, reference_frame)
     except Exception as exc:
         _set_status(session_id, "error", 0.05, f"Annotation error: {exc}")
         _log_debug(f"annotation error: {exc}")
         _log_trace()
         return
-    total_points = sum(len(v) for v in points_dict.values()) if points_dict else 0
-    if reference_entries:
-        total_points = sum(
-            sum(len(v) for v in entry["points"].values()) for entry in reference_entries
-        )
     _log_debug(
-        "annotations loaded: objects=%s points=%s reference_frames=%s"
-        % (len(object_names), total_points, [e["frame"] for e in reference_entries or []])
+        "annotations loaded: objects=%s points=%s"
+        % (len(object_names), sum(len(v) for v in points_dict.values()))
     )
     annotations_done = time.perf_counter()
 
@@ -686,37 +589,29 @@ def run_processing(session_id):
         chunk_overlap = auto_tune_info["chunk_overlap"] if auto_tune_info else config.get("chunk_overlap", 1)
         compress_masks = auto_tune_info["compress_masks"] if auto_tune_info else config.get("compress_masks")
 
-        shared_overlap_tracker = ImprovedTargetOverlapTracker(overlap_threshold)
-        shared_frame_analyses = {}
-
-        def _make_processor(reference_idx):
-            processor = UltraOptimizedProcessor(
-                predictor,
-                str(frames_dir),
-                overlap_threshold=overlap_threshold,
-                reference_frame=reference_idx,
-                batch_size=batch_size,
-                auto_fallback=auto_fallback,
-                preview_callback=_save_preview,
-                log_callback=_log_debug,
-                preview_stride=preview_stride,
-                preview_max_dim=720,
-                max_cache_frames=max_cache_frames,
-                gpu_memory_fraction=gpu_memory_fraction,
-                frame_stride=frame_stride,
-                frame_interpolation=frame_interpolation,
-                roi_enabled=roi_enabled,
-                roi_margin=roi_margin,
-                roi_min_size=roi_min_size,
-                roi_max_coverage=roi_max_coverage,
-                chunk_size=chunk_size,
-                chunk_overlap=chunk_overlap,
-                compress_masks=compress_masks,
-            )
-            processor.overlap_tracker = shared_overlap_tracker
-            return processor
-
-        processor = _make_processor(reference_frame)
+        processor = UltraOptimizedProcessor(
+            predictor,
+            str(frames_dir),
+            overlap_threshold=overlap_threshold,
+            reference_frame=reference_frame,
+            batch_size=batch_size,
+            auto_fallback=auto_fallback,
+            preview_callback=_save_preview,
+            log_callback=_log_debug,
+            preview_stride=preview_stride,
+            preview_max_dim=720,
+            max_cache_frames=max_cache_frames,
+            gpu_memory_fraction=gpu_memory_fraction,
+            frame_stride=frame_stride,
+            frame_interpolation=frame_interpolation,
+            roi_enabled=roi_enabled,
+            roi_margin=roi_margin,
+            roi_min_size=roi_min_size,
+            roi_max_coverage=roi_max_coverage,
+            chunk_size=chunk_size,
+            chunk_overlap=chunk_overlap,
+            compress_masks=compress_masks,
+        )
         wrapped = HeadlessProcessor(processor)
     except ImportError as exc:
         error_log.write_text(traceback.format_exc())
@@ -829,52 +724,7 @@ def run_processing(session_id):
 
     try:
         _set_status(session_id, "processing", 0.2, "Processing frames")
-        results = {}
-        partial_results = {}
-        total_segments = len(reference_entries or [])
-        for idx, entry in enumerate(reference_entries or []):
-            segment_start = entry["frame"]
-            segment_end = None
-            if reference_entries and idx + 1 < len(reference_entries):
-                segment_end = max(0, reference_entries[idx + 1]["frame"])
-
-            if total_segments > 1:
-                _set_status(
-                    session_id,
-                    "processing",
-                    0.2,
-                    f"Processing segment {idx + 1}/{total_segments} (frame {segment_start})",
-                )
-
-            segment_processor = _make_processor(segment_start)
-            segment_wrapped = HeadlessProcessor(segment_processor)
-            seed_masks = None
-            if idx > 0 and segment_start in results:
-                seed_masks = {}
-                for obj_id, mask in results.get(segment_start, {}).items():
-                    mask = segment_processor._decompress_mask(mask)
-                    if mask is None:
-                        continue
-                    seed_masks[obj_id] = mask
-
-            segment_results = segment_wrapped.process(
-                entry["points"],
-                entry["labels"],
-                object_names,
-                end_frame=segment_end,
-                seed_masks=seed_masks,
-                roi_points_dict=roi_points_dict,
-                finalize_events=(idx + 1 == total_segments),
-            )
-            if segment_results:
-                results.update(segment_results)
-                partial_results = results
-                segment_analyses = getattr(segment_processor, "frame_analyses", None) or {}
-                if segment_analyses:
-                    shared_frame_analyses.update(segment_analyses)
-            else:
-                raise RuntimeError("Processing failed: no results in segment")
-
+        results = wrapped.process(points_dict, labels_dict, object_names)
         if not results:
             _set_status(session_id, "error", 0.6, "Processing failed")
             _log_debug("processing failed: no results")
@@ -884,11 +734,11 @@ def run_processing(session_id):
         _log_debug(f"processing error: {exc}")
         _log_trace()
 
-        if not partial_results:
-            try:
-                partial_results = wrapped.get_partial_results() or {}
-            except Exception:
-                partial_results = {}
+        partial_results = {}
+        try:
+            partial_results = wrapped.get_partial_results() or {}
+        except Exception:
+            partial_results = {}
 
         if partial_results:
             _set_status(session_id, "saving", 0.85, "Writing partial outputs")
@@ -949,28 +799,18 @@ def run_processing(session_id):
     processing_done = time.perf_counter()
 
     try:
-        writer_reference = reference_entries[0]["frame"] if reference_entries else reference_frame
-        writer_processor = _make_processor(writer_reference)
-        writer_processor.overlap_tracker = shared_overlap_tracker
-        writer_processor.frame_analyses = shared_frame_analyses
-        try:
-            writer_processor._prepare_frame_source(roi_points_dict or points_dict)
-        except Exception:
-            pass
-        wrapped = HeadlessProcessor(writer_processor)
         _set_status(session_id, "saving", 0.85, "Writing outputs")
         outputs, output_dir, video_stem = _write_primary_outputs(results, fps_override=fps)
 
         finished_at = time.perf_counter()
         processing_seconds = max(processing_done - model_done, 1e-6)
-        frames_processed = len(results)
         profiling = {
             "model_key": resolved_model_key,
             "model_label": model_label,
             "device": str(device),
             "frames_total": frame_count,
             "objects_total": len(object_names),
-            "processing_fps": frames_processed / processing_seconds,
+            "processing_fps": frame_count / processing_seconds,
             "auto_tune": auto_tune_info,
             "timings_s": {
                 "load_annotations": annotations_done - started_at,

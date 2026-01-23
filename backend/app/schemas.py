@@ -41,8 +41,6 @@ class ConfigUpdate(BaseModel):
     export_video: bool = True
     export_elan: bool = True
     export_csv: bool = True
-    multi_reference: bool = False
-    reference_frames: Optional[List[int]] = None
     output_dir: Optional[str] = None
 
 
@@ -80,11 +78,6 @@ class ResultsResponse(BaseModel):
 class FrameExtractionRequest(BaseModel):
     session_id: str
     quality: int = 2
-    auto_reference: bool = False
-    auto_reference_stride: Optional[int] = None
-    auto_reference_threshold: Optional[float] = None
-    auto_reference_min: Optional[int] = None
-    auto_reference_max: Optional[int] = None
 
 
 class FrameListResponse(BaseModel):
