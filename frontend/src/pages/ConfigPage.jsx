@@ -1,6 +1,14 @@
 import React, { useEffect, useRef, useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
-import { createSession, uploadVideo, updateConfig, extractFrames, fetchModels, listFrames } from "../api.js";
+import {
+  createSession,
+  uploadVideo,
+  updateConfig,
+  extractFrames,
+  fetchModels,
+  listFrames,
+  createSampleClip,
+} from "../api.js";
 
 export default function ConfigPage() {
   const [sessionId, setSessionId] = useState("");
@@ -17,6 +25,9 @@ export default function ConfigPage() {
   const [chunkSize, setChunkSize] = useState("");
   const [chunkSeconds, setChunkSeconds] = useState("");
   const [chunkOverlap, setChunkOverlap] = useState("1");
+  const [processStartFrame, setProcessStartFrame] = useState("");
+  const [processEndFrame, setProcessEndFrame] = useState("");
+  const [sampleDuration, setSampleDuration] = useState("10");
   const [compressMode, setCompressMode] = useState("auto");
   const [useMps, setUseMps] = useState(false);
   const [exportVideo, setExportVideo] = useState(true);
@@ -37,6 +48,7 @@ export default function ConfigPage() {
   ]);
   const [framesReady, setFramesReady] = useState(false);
   const [frameCount, setFrameCount] = useState(0);
+  const [videoUploaded, setVideoUploaded] = useState(false);
   const [status, setStatus] = useState("Ready to start.");
   const [busy, setBusy] = useState(false);
   const inputRef = useRef(null);
@@ -142,14 +154,27 @@ export default function ConfigPage() {
     };
   }, []);
 
-  async function handleCreateSession() {
+  async function handleUpload() {
+    if (!videoFile) {
+      setStatus("Select a video file.");
+      return;
+    }
     try {
       setBusy(true);
-      setStatus("Creating session...");
+      setStatus("Creating new session...");
       const session = await createSession("web-session");
-      setSessionId(session.id);
-      localStorage.setItem("eoa_session", session.id);
-      setStatus("Session created. Upload your video.");
+      const activeSessionId = session.id;
+      setSessionId(activeSessionId);
+      localStorage.setItem("eoa_session", activeSessionId);
+      setVideoUploaded(false);
+      setFramesReady(false);
+      setFrameCount(0);
+      setStatus("Uploading video...");
+      await uploadVideo(activeSessionId, videoFile);
+      setVideoUploaded(true);
+      setFramesReady(false);
+      setFrameCount(0);
+      setStatus("Video uploaded. Choose full extraction or create a sample clip.");
     } catch (err) {
       setStatus(err.message);
     } finally {
@@ -157,19 +182,17 @@ export default function ConfigPage() {
     }
   }
 
-  async function handleUpload() {
+  async function handleExtractFrames() {
     if (!sessionId) {
       setStatus("Create a session first.");
       return;
     }
-    if (!videoFile) {
-      setStatus("Select a video file.");
+    if (!videoUploaded) {
+      setStatus("Upload a video first.");
       return;
     }
     try {
       setBusy(true);
-      setStatus("Uploading video...");
-      await uploadVideo(sessionId, videoFile);
       setStatus("Extracting frames...");
       await extractFrames(sessionId);
       try {
@@ -181,6 +204,37 @@ export default function ConfigPage() {
         setFramesReady(true);
       }
       setStatus("Frames ready. Save configuration to continue.");
+    } catch (err) {
+      setStatus(err.message);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function handleCreateSampleClip() {
+    if (!sessionId) {
+      setStatus("Create a session first.");
+      return;
+    }
+    if (!videoUploaded) {
+      setStatus("Upload a video first.");
+      return;
+    }
+    try {
+      setBusy(true);
+      setStatus("Creating sample clip...");
+      await createSampleClip(sessionId, Number(sampleDuration) || 10);
+      setStatus("Extracting frames from sample...");
+      await extractFrames(sessionId);
+      try {
+        const data = await listFrames(sessionId);
+        const count = data.frame_count || 0;
+        setFrameCount(count);
+        setFramesReady(count > 0);
+      } catch (err) {
+        setFramesReady(true);
+      }
+      setStatus("Sample clip ready. Save configuration to continue.");
     } catch (err) {
       setStatus(err.message);
     } finally {
@@ -243,6 +297,8 @@ export default function ConfigPage() {
         roi_margin: roiMarginValue === null ? 0.15 : roiMarginValue,
         roi_min_size: roiMinSizeValue === null ? 256 : roiMinSizeValue,
         roi_max_coverage: roiMaxCoverageValue === null ? 0.95 : roiMaxCoverageValue,
+        process_start_frame: toOptionalInt(processStartFrame),
+        process_end_frame: toOptionalInt(processEndFrame),
       });
       setStatus("Configuration saved. Proceed to annotation.");
       navigate("/annotation");
@@ -358,14 +414,42 @@ export default function ConfigPage() {
                   <p className="text-sm text-gray-500 mt-2">Supports MP4, MOV, AVI files</p>
                 </div>
                 <div className="mt-4 flex items-center justify-between">
-                  <button className="btn-secondary" onClick={handleCreateSession} disabled={busy}>
-                    Create Session
-                  </button>
+                  <div className="text-sm text-gray-600">
+                    Session: {sessionId || "Creating on upload"}
+                  </div>
                   <button className="btn-primary" onClick={handleUpload} disabled={busy}>
                     Upload Video
                   </button>
                 </div>
-                <p className="text-sm text-gray-500 mt-2">Session: {sessionId || "Not created"}</p>
+                <div className="mt-6 border-t pt-4 space-y-3">
+                  <div className="grid grid-cols-2 gap-3">
+                    <button className="btn-secondary" onClick={handleExtractFrames} disabled={busy || !videoUploaded}>
+                      Extract Full Frames
+                    </button>
+                    <div className="text-xs text-gray-500 flex items-center">
+                      Uses the original upload and overwrites existing frames.
+                    </div>
+                  </div>
+                  <div>
+                    <label className="block text-sm font-medium mb-2">Sample Clip Length (seconds)</label>
+                    <input
+                      type="text"
+                      value={sampleDuration}
+                      onChange={(event) => setSampleDuration(event.target.value)}
+                    />
+                  </div>
+                  <button
+                    className="btn-secondary w-full"
+                    onClick={handleCreateSampleClip}
+                    disabled={busy || !videoUploaded}
+                  >
+                    Create Sample Clip
+                  </button>
+                  <p className="text-xs text-gray-500">
+                    Creates a short clip from your upload and re-extracts frames for quick testing.
+                  </p>
+                </div>
+                <p className="text-sm text-gray-500 mt-2">Session ID: {sessionId || "pending"}</p>
               </div>
 
               <div className="control-panel">
@@ -636,6 +720,24 @@ export default function ConfigPage() {
                       type="text"
                       value={chunkOverlap}
                       onChange={(event) => setChunkOverlap(event.target.value)}
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-sm font-medium mb-2">Process Start Frame</label>
+                    <input
+                      type="text"
+                      value={processStartFrame}
+                      onChange={(event) => setProcessStartFrame(event.target.value)}
+                      placeholder="start frame index"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-sm font-medium mb-2">Process End Frame</label>
+                    <input
+                      type="text"
+                      value={processEndFrame}
+                      onChange={(event) => setProcessEndFrame(event.target.value)}
+                      placeholder="end frame index"
                     />
                   </div>
                   <div>

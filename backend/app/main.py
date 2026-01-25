@@ -19,6 +19,7 @@ from .schemas import (
     ResultsResponse,
     FrameExtractionRequest,
     FrameListResponse,
+    SampleClipRequest,
 )
 from .state import state
 from .processing import start_background_job, test_mask_preview, list_available_models
@@ -126,6 +127,54 @@ def upload_video(session_id: str, file: UploadFile = File(...)):
     return state.update_session(session_id, video_path=str(dest))
 
 
+@app.post("/uploads/sample", response_model=Session)
+def create_sample_clip(payload: SampleClipRequest):
+    try:
+        session = state.get_session(payload.session_id)
+    except KeyError:
+        raise HTTPException(status_code=404, detail="Session not found")
+
+    if not session.video_path:
+        raise HTTPException(status_code=400, detail="Video not uploaded")
+
+    try:
+        duration = float(payload.duration_seconds)
+    except (TypeError, ValueError):
+        duration = 0.0
+    if duration <= 0:
+        raise HTTPException(status_code=400, detail="Duration must be > 0 seconds")
+
+    source_path = Path(session.video_path)
+    duration_label = int(round(duration))
+    output_name = f"{source_path.stem}_sample_{duration_label}s.mp4"
+    output_path = source_path.parent / output_name
+
+    cmd = [
+        "ffmpeg",
+        "-y",
+        "-i",
+        str(source_path),
+        "-t",
+        str(duration),
+        "-an",
+        "-c:v",
+        "libx264",
+        "-preset",
+        "veryfast",
+        "-crf",
+        "23",
+        "-movflags",
+        "+faststart",
+        str(output_path),
+    ]
+
+    result = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+    if result.returncode != 0:
+        raise HTTPException(status_code=500, detail=result.stderr.strip() or "Sample clip failed")
+
+    return state.update_session(payload.session_id, video_path=str(output_path))
+
+
 @app.post("/frames/extract")
 def extract_frames(payload: FrameExtractionRequest):
     try:
@@ -137,8 +186,20 @@ def extract_frames(payload: FrameExtractionRequest):
         raise HTTPException(status_code=400, detail="Video not uploaded")
 
     frames_dir = SESSIONS_DIR / payload.session_id / "frames"
-    frames_dir.mkdir(parents=True, exist_ok=True)
     thumbs_dir = SESSIONS_DIR / payload.session_id / "thumbs"
+    if frames_dir.exists():
+        for item in frames_dir.glob("*.jpg"):
+            try:
+                item.unlink()
+            except Exception:
+                pass
+    if thumbs_dir.exists():
+        for item in thumbs_dir.glob("*.jpg"):
+            try:
+                item.unlink()
+            except Exception:
+                pass
+    frames_dir.mkdir(parents=True, exist_ok=True)
     thumbs_dir.mkdir(parents=True, exist_ok=True)
     output_pattern = str(frames_dir / "%05d.jpg")
 
@@ -299,6 +360,9 @@ def add_annotation_points(payload: AnnotationPayload):
     existing["objects"][payload.object_name] = [
         {"x": p.x, "y": p.y, "label": p.label} for p in payload.points
     ]
+    prev_name = payload.previous_object_name
+    if prev_name and prev_name != payload.object_name:
+        existing["objects"].pop(prev_name, None)
     frame_file.write_text(json.dumps(existing, indent=2))
     config = session.config or {}
     if config.get("reference_frame") != payload.frame_index:

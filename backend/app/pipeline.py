@@ -1,6 +1,7 @@
 import os
 import json
 import shutil
+from pathlib import Path
 from datetime import datetime
 import traceback
 
@@ -10,11 +11,18 @@ import torch
 import matplotlib.pyplot as plt
 from tqdm import tqdm
 
+try:
+    import psutil
+except ImportError:  # pragma: no cover - optional dependency
+    psutil = None
+
 
 os.environ.setdefault("SAM2_OFFLOAD_VIDEO_TO_CPU", "true")
 os.environ.setdefault("SAM2_OFFLOAD_STATE_TO_CPU", "true")
 os.environ.setdefault("PYTORCH_ENABLE_MPS_FALLBACK", "1")
 os.environ.setdefault("CUDA_LAUNCH_BLOCKING", "1")
+
+RAM_PRESSURE_THRESHOLD = 80
 
 
 def _format_tensor_info(value):
@@ -62,6 +70,30 @@ def get_gpu_memory_info():
             "utilization_pct": (reserved / total) * 100,
         }
     return None
+
+
+def get_system_memory_info():
+    if psutil is None:
+        return None
+    try:
+        mem = psutil.virtual_memory()
+        return {
+            "total_gb": mem.total / 1024**3,
+            "available_gb": mem.available / 1024**3,
+            "used_gb": mem.used / 1024**3,
+            "percent_used": mem.percent,
+        }
+    except Exception:
+        return None
+
+
+def check_memory_pressure(threshold_pct=None):
+    if threshold_pct is None:
+        threshold_pct = RAM_PRESSURE_THRESHOLD
+    mem_info = get_system_memory_info()
+    if mem_info and mem_info["percent_used"] >= threshold_pct:
+        return True, mem_info
+    return False, mem_info
 
 
 def ultra_cleanup_memory():
@@ -115,6 +147,62 @@ def setup_device_ultra_optimized():
     print(f"Using device: {device}")
     return device
 
+
+class DiskBackedMaskStore:
+    """Store masks on disk with a small in-memory cache."""
+
+    def __init__(self, base_dir, max_in_memory=50):
+        self.base_dir = Path(base_dir)
+        self.base_dir.mkdir(parents=True, exist_ok=True)
+        self._index = {}
+        self._in_memory = {}
+        self._max_in_memory = max_in_memory
+
+    def store(self, frame_idx, frame_results):
+        frame_dir = self.base_dir / f"frame_{int(frame_idx):06d}"
+        frame_dir.mkdir(exist_ok=True)
+        obj_ids = []
+        for obj_id, mask in frame_results.items():
+            if mask is None:
+                continue
+            mask_path = frame_dir / f"obj_{int(obj_id)}.npz"
+            np.savez_compressed(mask_path, mask=mask.astype(np.uint8))
+            obj_ids.append(int(obj_id))
+        self._index[int(frame_idx)] = obj_ids
+        self._in_memory[int(frame_idx)] = frame_results
+        if len(self._in_memory) > self._max_in_memory:
+            oldest = min(self._in_memory.keys())
+            del self._in_memory[oldest]
+        return obj_ids
+
+    def load(self, frame_idx):
+        frame_idx = int(frame_idx)
+        if frame_idx in self._in_memory:
+            return self._in_memory[frame_idx]
+        obj_ids = self._index.get(frame_idx)
+        if not obj_ids:
+            return {}
+        frame_dir = self.base_dir / f"frame_{frame_idx:06d}"
+        results = {}
+        for obj_id in obj_ids:
+            mask_path = frame_dir / f"obj_{obj_id}.npz"
+            if not mask_path.exists():
+                continue
+            data = np.load(mask_path)
+            results[obj_id] = data["mask"].astype(bool)
+        return results
+
+    def has_frame(self, frame_idx):
+        return int(frame_idx) in self._index
+
+    def frame_indices(self):
+        return sorted(self._index.keys())
+
+    def cleanup(self):
+        try:
+            shutil.rmtree(self.base_dir)
+        except Exception:
+            pass
 
 def get_video_fps(video_path):
     """Get video FPS using OpenCV."""
@@ -453,6 +541,12 @@ class UltraOptimizedProcessor:
         chunk_size=None,
         chunk_overlap=1,
         compress_masks=None,
+        process_start_frame=None,
+        process_end_frame=None,
+        mask_store_dir=None,
+        disk_store_max_in_memory=50,
+        ram_pressure_threshold=RAM_PRESSURE_THRESHOLD,
+        disk_store_enabled=True,
     ):
         self.predictor = predictor
         self.full_video_dir = video_dir
@@ -477,6 +571,16 @@ class UltraOptimizedProcessor:
         self.chunk_size = chunk_size
         self.chunk_overlap = chunk_overlap
         self.compress_masks = compress_masks
+        self.process_start_frame_full = process_start_frame
+        self.process_end_frame_full = process_end_frame
+        self.process_start_frame = None
+        self.process_end_frame = None
+        self.mask_store_dir = mask_store_dir
+        self.disk_store_max_in_memory = disk_store_max_in_memory
+        self.ram_pressure_threshold = ram_pressure_threshold
+        self.disk_store_enabled = disk_store_enabled
+        self._mask_store = None
+        self._disk_store_active = False
         self.frame_index_map = None
         self.roi_info = None
         self._prepared = False
@@ -578,6 +682,79 @@ class UltraOptimizedProcessor:
         except Exception:
             pass
 
+    def cleanup_mask_store(self):
+        if self._mask_store is None:
+            return
+        try:
+            self._mask_store.cleanup()
+        except Exception:
+            pass
+        self._mask_store = None
+        self._disk_store_active = False
+
+    def _normalize_frame_results(self, frame_results):
+        normalized = {}
+        if not frame_results:
+            return normalized
+        for obj_id, mask in frame_results.items():
+            if mask is None:
+                continue
+            m = self._decompress_mask(mask)
+            if m is None:
+                continue
+            if hasattr(m, "shape") and len(m.shape) == 3:
+                m = m[0]
+            normalized[obj_id] = m.astype(bool)
+        return normalized
+
+    def _ensure_disk_store(self):
+        if self._mask_store is not None or not self.disk_store_enabled:
+            return self._mask_store
+        base_dir = self.mask_store_dir
+        if not base_dir:
+            base_dir = os.path.join(os.path.dirname(self.full_video_dir), "mask_cache")
+        self._mask_store = DiskBackedMaskStore(base_dir, max_in_memory=self.disk_store_max_in_memory)
+        self._disk_store_active = True
+        return self._mask_store
+
+    def _enable_disk_store(self, results, reason=None):
+        store = self._ensure_disk_store()
+        if store is None:
+            return False
+        if reason:
+            self._log(f"disk store enabled: {reason}")
+        # Offload any in-memory results to disk
+        for frame_idx, frame_results in list(results.items()):
+            if not frame_results:
+                continue
+            if isinstance(frame_results, dict) and frame_results.get("_disk_only"):
+                continue
+            normalized = self._normalize_frame_results(frame_results)
+            if normalized:
+                store.store(frame_idx, normalized)
+                results[frame_idx] = {"_disk_only": True}
+        ultra_cleanup_memory()
+        return True
+
+    def _store_frame_results(self, results, frame_idx, frame_results):
+        if self._mask_store is not None:
+            self._mask_store.store(frame_idx, frame_results)
+            results[frame_idx] = {"_disk_only": True}
+            return
+        if self.compress_masks:
+            results[frame_idx] = {
+                obj_id: self._compress_mask(mask) for obj_id, mask in frame_results.items()
+            }
+        else:
+            results[frame_idx] = frame_results
+
+    def _get_frame_results(self, results, frame_idx):
+        frame_results = results.get(frame_idx)
+        if self._mask_store is not None:
+            if not frame_results or (isinstance(frame_results, dict) and frame_results.get("_disk_only")):
+                return self._mask_store.load(frame_idx)
+        return frame_results or {}
+
     def get_partial_results(self):
         return self.partial_results or {}
 
@@ -597,6 +774,18 @@ class UltraOptimizedProcessor:
         if 0 <= local_idx < len(self.frame_index_map):
             return self.frame_index_map[local_idx]
         return local_idx
+
+    def _map_full_range_to_local(self, full_start, full_end):
+        if not self.frame_index_map:
+            return full_start, full_end
+        local_start = None
+        local_end = None
+        for idx, full_idx in enumerate(self.frame_index_map):
+            if local_start is None and full_idx >= full_start:
+                local_start = idx
+            if full_idx <= full_end:
+                local_end = idx
+        return local_start, local_end
 
     def _compute_roi_box(self, points_dict, frame_width, frame_height):
         if not self.roi_enabled:
@@ -784,6 +973,36 @@ class UltraOptimizedProcessor:
                 )
             )
 
+        full_start = self.process_start_frame_full
+        full_end = self.process_end_frame_full
+        if full_start is not None or full_end is not None:
+            try:
+                full_start = int(full_start) if full_start is not None else 0
+            except (TypeError, ValueError):
+                full_start = 0
+            try:
+                full_end = int(full_end) if full_end is not None else total_frames - 1
+            except (TypeError, ValueError):
+                full_end = total_frames - 1
+            full_start = max(0, min(full_start, total_frames - 1))
+            full_end = max(0, min(full_end, total_frames - 1))
+            if full_end < full_start:
+                full_end = full_start
+            if self.reference_frame_full < full_start:
+                full_start = self.reference_frame_full
+            if self.reference_frame_full > full_end:
+                full_end = self.reference_frame_full
+            self.process_start_frame_full = full_start
+            self.process_end_frame_full = full_end
+            local_start, local_end = self._map_full_range_to_local(full_start, full_end)
+            if local_start is not None and local_end is not None and local_end >= local_start:
+                self.process_start_frame = local_start
+                self.process_end_frame = local_end
+                self._log(
+                    "frame range enabled: full=%s-%s local=%s-%s"
+                    % (full_start, full_end, local_start, local_end)
+                )
+
     def _fill_missing_frames(self, results):
         if not self.frame_index_map:
             return results
@@ -796,7 +1015,18 @@ class UltraOptimizedProcessor:
         if stride is None or stride <= 1:
             return results
 
-        processed = sorted(results.keys())
+        full_last = len(self.full_frame_names) - 1
+        range_start = 0
+        range_end = full_last
+        if self.process_start_frame_full is not None or self.process_end_frame_full is not None:
+            if self.process_start_frame_full is not None:
+                range_start = max(0, int(self.process_start_frame_full))
+            if self.process_end_frame_full is not None:
+                range_end = min(full_last, int(self.process_end_frame_full))
+            if range_end < range_start:
+                range_end = range_start
+
+        processed = sorted([idx for idx in results.keys() if range_start <= idx <= range_end])
         if len(processed) < 2:
             return results
 
@@ -805,8 +1035,8 @@ class UltraOptimizedProcessor:
             if next_idx <= prev_idx + 1:
                 continue
             gap = next_idx - prev_idx
-            prev_masks = results.get(prev_idx, {})
-            next_masks = results.get(next_idx, {})
+            prev_masks = self._get_frame_results(results, prev_idx)
+            next_masks = self._get_frame_results(results, next_idx)
             for missing in range(prev_idx + 1, next_idx):
                 if interpolation == "linear" and next_masks:
                     alpha = (missing - prev_idx) / float(gap)
@@ -834,17 +1064,16 @@ class UltraOptimizedProcessor:
                                     nm = pm
                             blend = (1.0 - alpha) * pm.astype(np.float32) + alpha * nm.astype(np.float32)
                             mask = blend > 0.5
-                        interp_masks[obj_id] = self._compress_mask(mask) if self.compress_masks else mask
-                    results[missing] = interp_masks
+                        interp_masks[obj_id] = mask
+                    self._store_frame_results(results, missing, interp_masks)
                 else:
-                    results[missing] = prev_masks
+                    self._store_frame_results(results, missing, prev_masks)
 
         last_idx = processed[-1]
-        full_last = len(self.full_frame_names) - 1
-        if last_idx < full_last:
-            prev_masks = results.get(last_idx, {})
-            for missing in range(last_idx + 1, full_last + 1):
-                results[missing] = prev_masks
+        if last_idx < range_end:
+            prev_masks = self._get_frame_results(results, last_idx)
+            for missing in range(last_idx + 1, range_end + 1):
+                self._store_frame_results(results, missing, prev_masks)
         return results
 
     def process_video_with_memory_management(self, points_dict, labels_dict, object_names, debug=True):
@@ -954,8 +1183,31 @@ class UltraOptimizedProcessor:
         overlap_count = 0
         last_memory_check = 0
 
-        start_frame = max(0, min(self.reference_frame, len(self.frame_names) - 1))
-        total_to_process = max(0, len(self.frame_names) - start_frame)
+        use_disk_mode = False
+        mem_info = get_system_memory_info()
+        if self.disk_store_enabled:
+            if len(self.frame_names) >= 2000:
+                use_disk_mode = True
+                self._enable_disk_store(results, reason="long video")
+            elif mem_info and mem_info.get("percent_used", 0) >= 70:
+                use_disk_mode = True
+                self._enable_disk_store(
+                    results,
+                    reason=f"ram usage {mem_info.get('percent_used', 0):.0f}%",
+                )
+
+        total_frames = len(self.frame_names)
+        start_frame = max(0, min(self.reference_frame, total_frames - 1))
+        range_start = self.process_start_frame if self.process_start_frame is not None else start_frame
+        range_end = self.process_end_frame if self.process_end_frame is not None else total_frames - 1
+        range_start = max(start_frame, min(int(range_start), total_frames - 1))
+        range_end = max(range_start, min(int(range_end), total_frames - 1))
+        total_to_process = max(0, range_end - range_start + 1)
+        if self.process_start_frame is not None or self.process_end_frame is not None:
+            self._log(
+                "processing range: start=%s end=%s (local frames)"
+                % (range_start, range_end)
+            )
         chunk_size = None
         if self.chunk_size is not None:
             try:
@@ -994,6 +1246,11 @@ class UltraOptimizedProcessor:
                         gpu_info = get_gpu_memory_info()
                         if gpu_info and gpu_info["utilization_pct"] > 90:
                             ultra_cleanup_memory()
+                        is_pressured, mem_info = check_memory_pressure(self.ram_pressure_threshold)
+                        if is_pressured and not self._disk_store_active:
+                            use_disk_mode = True
+                            pct = mem_info.get("percent_used", 0) if mem_info else 0
+                            self._enable_disk_store(results, reason=f"ram pressure {pct:.0f}%")
                         last_memory_check = frame_count
 
                     frame_results = {}
@@ -1005,12 +1262,10 @@ class UltraOptimizedProcessor:
                         last_masks[out_obj_id] = mask.copy()
                         del mask
 
-                    if self.compress_masks:
-                        results[global_frame_idx] = {
-                            obj_id: self._compress_mask(mask) for obj_id, mask in frame_results.items()
-                        }
+                    if self._disk_store_active:
+                        self._store_frame_results(results, global_frame_idx, frame_results)
                     else:
-                        results[global_frame_idx] = frame_results
+                        self._store_frame_results(results, global_frame_idx, frame_results)
 
                     if targets_found:
                         frame_analysis = self.overlap_tracker.track_frame_overlaps_batch(
@@ -1078,21 +1333,23 @@ class UltraOptimizedProcessor:
                             self._log(traceback.format_exc())
                         print(f"  Error adding prompts for object {obj_id}: {exc}")
                         continue
+                max_track = range_end - start_frame
+                max_track = max(0, max_track)
                 last_processed, _ = _process_frames(
                     inference_state,
                     start_frame,
-                    total_to_process - 1 if total_to_process > 0 else 0,
-                    start_frame,
+                    max_track,
+                    range_start,
                 )
                 if last_processed is None:
                     ultra_cleanup_memory()
             else:
                 if debug:
                     self._log("chunking enabled: chunk_size=%s chunk_overlap=%s" % (chunk_size, chunk_overlap))
-                next_start = start_frame
+                next_start = range_start
                 seed_masks = None
                 chunk_index = 0
-                while next_start < len(self.frame_names):
+                while next_start <= range_end:
                     if chunk_index > 0:
                         inference_state = self.predictor.init_state(
                             video_path=self.video_dir,
@@ -1149,12 +1406,15 @@ class UltraOptimizedProcessor:
                                     self._log(traceback.format_exc())
                                 continue
 
-                    remaining = len(self.frame_names) - next_start
+                    remaining = range_end - next_start + 1
                     desired_new = min(chunk_size, remaining)
                     if chunk_index == 0:
                         max_track = max(0, desired_new - 1)
                     else:
                         max_track = max(0, desired_new + chunk_overlap - 1)
+                    skip_needed = max(0, next_start - seed_frame)
+                    max_track = max(max_track, skip_needed)
+                    max_track = min(max_track, max(0, range_end - seed_frame))
 
                     last_processed, seed_masks = _process_frames(
                         inference_state,
@@ -1276,6 +1536,7 @@ class UltraOptimizedProcessor:
 
         cmap = plt.get_cmap("tab10")
         overlap_frame_count = 0
+        last_target_states = {}
 
         max_frame = len(frame_names) - 1
         if frame_limit is not None:
@@ -1306,7 +1567,8 @@ class UltraOptimizedProcessor:
 
             looking_at_info = {}
             if frame_analysis:
-                for obj_id in results.get(frame_idx, {}):
+                frame_results = self._get_frame_results(results, frame_idx)
+                for obj_id in frame_results:
                     looking_at_info[obj_id] = {
                         "is_target": False,
                         "looking_at": [],
@@ -1328,8 +1590,9 @@ class UltraOptimizedProcessor:
                             looking_at_info[obj_id]["looked_at_by"].append(target_name)
                             looking_at_info[obj_id]["is_being_looked_at"] = True
 
-            if frame_idx in results:
-                for obj_id, mask in results[frame_idx].items():
+            frame_results = self._get_frame_results(results, frame_idx)
+            if frame_results:
+                for obj_id, mask in frame_results.items():
                     mask = self._decompress_mask(mask)
                     mask = self._expand_roi_mask(mask)
                     if mask is None:
@@ -1352,11 +1615,17 @@ class UltraOptimizedProcessor:
 
                         base_color = np.array(cmap(obj_id % 10)[:3]) * 255
                         if is_target and looking_at:
-                            color = np.array([0, 255, 255])
+                            color = np.minimum(base_color + [100, 100, 0], 255)
+                            border_color = (0, 255, 255)
+                            border_thickness = 8
                         elif is_being_looked_at:
-                            color = np.array([0, 0, 255])
+                            color = np.minimum(base_color + [120, 0, 0], 255)
+                            border_color = (0, 0, 255)
+                            border_thickness = 8
                         else:
                             color = base_color
+                            border_color = (255, 255, 255)
+                            border_thickness = 2
 
                         # Blend only inside the mask to avoid darkening the whole frame
                         for c in range(3):
@@ -1366,31 +1635,51 @@ class UltraOptimizedProcessor:
                             ).astype(np.uint8)
 
                         contours, _ = cv2.findContours(mask.astype(np.uint8), cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-                        border_color = (255, 255, 0) if is_target else (0, 0, 255) if is_being_looked_at else (255, 255, 255)
-                        cv2.drawContours(overlay, contours, -1, border_color, 2)
+                        cv2.drawContours(overlay, contours, -1, border_color, border_thickness)
 
                         obj_name = self.object_names.get(obj_id, f"Object_{obj_id}")
-                        status_text = obj_name
                         if is_target and looking_at:
-                            status_text = f"{obj_name} looking at {', '.join(looking_at)}"
+                            if len(looking_at) == 1:
+                                status_text = f"{obj_name} -> OVERLAPS {looking_at[0]}"
+                            else:
+                                status_text = f"{obj_name} -> OVERLAPS {len(looking_at)} OBJECTS"
                         elif is_being_looked_at:
-                            status_text = f"{obj_name} looked at by {', '.join(looked_at_by)}"
+                            continue
+                        else:
+                            status_text = obj_name
+                        if is_target and looking_at:
+                            pass
+                        elif is_being_looked_at:
+                            pass
                         # place label near mask centroid (fallback to top-left stack)
                         ys, xs = np.where(mask)
                         if len(xs) > 0:
                             cx, cy = int(xs.mean()), int(ys.mean())
                         else:
                             cx, cy = 10, 30 + (obj_id * 25) % max(25, height - 30)
+                        font_scale = 0.6 if len(status_text) > 30 else 0.7
                         (tw, th), baseline = cv2.getTextSize(
-                            status_text, cv2.FONT_HERSHEY_SIMPLEX, 0.6, 2
+                            status_text, cv2.FONT_HERSHEY_SIMPLEX, font_scale, 2
                         )
                         x = max(0, min(cx - tw // 2, width - tw - 2))
                         y = max(th + 4, min(cy, height - 4))
+                        if is_target and looking_at:
+                            bg_color = (0, 100, 200)
+                            text_color = (0, 255, 255)
+                            padding = 10
+                        elif is_being_looked_at:
+                            bg_color = (0, 0, 200)
+                            text_color = (255, 255, 255)
+                            padding = 10
+                        else:
+                            bg_color = (0, 0, 0)
+                            text_color = (255, 255, 255)
+                            padding = 5
                         cv2.rectangle(
                             overlay,
-                            (x - 2, y - th - 2),
-                            (x + tw + 2, y + baseline + 2),
-                            (0, 0, 0),
+                            (x - padding, y - th - padding),
+                            (x + tw + padding, y + baseline + padding),
+                            bg_color,
                             -1,
                         )
                         cv2.putText(
@@ -1398,10 +1687,95 @@ class UltraOptimizedProcessor:
                             status_text,
                             (x, y),
                             cv2.FONT_HERSHEY_SIMPLEX,
-                            0.6,
-                            (255, 255, 255),
+                            font_scale,
+                            text_color,
                             2,
                         )
+
+            status_messages = []
+            event_messages = []
+            if frame_analysis:
+                target_overlaps = frame_analysis.get("target_overlaps", {}) or {}
+                if target_overlaps and any(target_overlaps.values()):
+                    target_events = []
+                    for target_id, looking_at_objects in target_overlaps.items():
+                        target_name = self.overlap_tracker.target_objects.get(
+                            target_id, f"Target_{target_id}"
+                        )
+                        object_names = [obj["object_name"] for obj in looking_at_objects]
+                        if len(object_names) == 1:
+                            target_events.append(f"{target_name} -> {object_names[0]}")
+                        else:
+                            target_events.append(f"{target_name} -> {len(object_names)} objects")
+                    if target_events:
+                        status_messages.append(f"LOOKING AT DETECTED: {'; '.join(target_events)}")
+
+                for target_id, target_name in self.overlap_tracker.target_objects.items():
+                    current = set(
+                        obj["object_name"] for obj in (target_overlaps.get(target_id) or [])
+                    )
+                    last = last_target_states.get(target_id, set())
+                    if current and current == last:
+                        event_messages.append(
+                            f"EVENT CONTINUES: {target_name} -> {', '.join(sorted(current))}"
+                        )
+                    elif current and not last:
+                        event_messages.append(
+                            f"EVENT STARTED: {target_name} -> {', '.join(sorted(current))}"
+                        )
+                    elif not current and last:
+                        event_messages.append(
+                            f"EVENT ENDED: {target_name} -> {', '.join(sorted(last))}"
+                        )
+                    elif current and last and current != last:
+                        event_messages.append(
+                            f"EVENT ENDED: {target_name} -> {', '.join(sorted(last))}"
+                        )
+                        event_messages.append(
+                            f"EVENT STARTED: {target_name} -> {', '.join(sorted(current))}"
+                        )
+                    last_target_states[target_id] = current
+
+            info_y = 30
+            for message in status_messages:
+                text_size = cv2.getTextSize(message, cv2.FONT_HERSHEY_SIMPLEX, 0.8, 2)[0]
+                cv2.rectangle(
+                    overlay,
+                    (5, info_y - 25),
+                    (text_size[0] + 15, info_y + 10),
+                    (0, 0, 180),
+                    -1,
+                )
+                cv2.putText(
+                    overlay,
+                    message,
+                    (10, info_y),
+                    cv2.FONT_HERSHEY_SIMPLEX,
+                    0.8,
+                    (0, 255, 255),
+                    2,
+                )
+                info_y += 35
+
+            for message in event_messages:
+                text_size = cv2.getTextSize(message, cv2.FONT_HERSHEY_SIMPLEX, 0.6, 2)[0]
+                cv2.rectangle(
+                    overlay,
+                    (5, info_y - 22),
+                    (text_size[0] + 15, info_y + 8),
+                    (0, 100, 200),
+                    -1,
+                )
+                cv2.putText(
+                    overlay,
+                    message,
+                    (10, info_y),
+                    cv2.FONT_HERSHEY_SIMPLEX,
+                    0.6,
+                    (255, 255, 255),
+                    2,
+                )
+                info_y += 28
 
             if show_original:
                 output_frame = np.concatenate([frame, overlay], axis=1)
@@ -1589,7 +1963,7 @@ class UltraOptimizedProcessor:
             total_frames = len(results)
             processed_frames = 0
             for frame_idx in sorted(results.keys()):
-                frame_results = results.get(frame_idx, {})
+                frame_results = self._get_frame_results(results, frame_idx)
                 frame_analysis = analyses.get(frame_idx, {}) or {}
                 target_overlaps = frame_analysis.get("target_overlaps", {}) or {}
 

@@ -42,6 +42,8 @@ class ConfigUpdate(BaseModel):
     export_elan: bool = True
     export_csv: bool = True
     output_dir: Optional[str] = None
+    process_start_frame: Optional[int] = None
+    process_end_frame: Optional[int] = None
 
 
 class Point(BaseModel):
@@ -54,6 +56,7 @@ class AnnotationPayload(BaseModel):
     session_id: str
     frame_index: int
     object_name: str
+    previous_object_name: Optional[str] = None
     points: List[Point]
 
 
@@ -87,3 +90,8 @@ class FrameListResponse(BaseModel):
     frame_width: Optional[int] = None
     frame_height: Optional[int] = None
     has_thumbnails: bool = False
+
+
+class SampleClipRequest(BaseModel):
+    session_id: str
+    duration_seconds: float = 10.0

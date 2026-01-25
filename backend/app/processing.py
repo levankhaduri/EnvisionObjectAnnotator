@@ -388,6 +388,9 @@ class HeadlessProcessor:
             results, object_names, output_path, progress_callback=progress_callback
         )
 
+    def cleanup_mask_store(self):
+        return self._processor.cleanup_mask_store()
+
 
 def _set_status(session_id, status, progress, message):
     state.set_processing(
@@ -515,6 +518,16 @@ def run_processing(session_id):
         roi_max_coverage = float(config.get("roi_max_coverage", 0.95))
     except (TypeError, ValueError):
         roi_max_coverage = 0.95
+    process_start_frame = config.get("process_start_frame")
+    process_end_frame = config.get("process_end_frame")
+    try:
+        process_start_frame = int(process_start_frame)
+    except (TypeError, ValueError):
+        process_start_frame = None
+    try:
+        process_end_frame = int(process_end_frame)
+    except (TypeError, ValueError):
+        process_end_frame = None
     use_mps = bool(config.get("use_mps", False))
     model_key = config.get("model_key") or "auto"
     resolved_model_key = model_key
@@ -611,6 +624,9 @@ def run_processing(session_id):
             chunk_size=chunk_size,
             chunk_overlap=chunk_overlap,
             compress_masks=compress_masks,
+            mask_store_dir=str(SESSIONS_DIR / session_id / "mask_cache"),
+            process_start_frame=process_start_frame,
+            process_end_frame=process_end_frame,
         )
         wrapped = HeadlessProcessor(processor)
     except ImportError as exc:
@@ -687,6 +703,10 @@ def run_processing(session_id):
     def _start_csv_export(results_to_save, outputs, output_dir, video_stem, suffix=""):
         if not export_csv:
             _update_outputs_meta(csv_status="disabled", csv_progress=0.0, outputs_override=outputs)
+            try:
+                wrapped.cleanup_mask_store()
+            except Exception:
+                pass
             return
 
         _update_outputs_meta(csv_status="pending", csv_progress=0.0, outputs_override=outputs)
@@ -714,6 +734,10 @@ def run_processing(session_id):
                     csv_progress=1.0,
                     outputs_override=outputs_done,
                 )
+                try:
+                    wrapped.cleanup_mask_store()
+                except Exception:
+                    pass
             except Exception as exc:
                 _log_debug(f"csv export error: {exc}")
                 _log_trace()

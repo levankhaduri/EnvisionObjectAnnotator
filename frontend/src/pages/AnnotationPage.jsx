@@ -25,6 +25,8 @@ export default function AnnotationPage() {
   const [busy, setBusy] = useState(false);
   const [maskPreviewUrl, setMaskPreviewUrl] = useState("");
   const [showPreview, setShowPreview] = useState(false);
+  const [markAsTarget, setMarkAsTarget] = useState(false);
+  const [targetToggleTouched, setTargetToggleTouched] = useState(false);
   const annotationsCache = useRef(new Map());
   const maskCache = useRef(new Map());
   const imgRef = useRef(null);
@@ -42,6 +44,8 @@ export default function AnnotationPage() {
     maskCache.current.clear();
     setVideoDims(null);
     setUseThumbs(true);
+    setMarkAsTarget(false);
+    setTargetToggleTouched(false);
   }, [sessionId]);
 
   useEffect(() => {
@@ -94,6 +98,8 @@ export default function AnnotationPage() {
           const first = Object.keys(normalized)[0] || "";
           setSelectedObject(first);
           setPoints(first ? normalized[first] : []);
+          setMarkAsTarget(isTargetName(first));
+          setTargetToggleTouched(false);
           return;
         }
 
@@ -111,6 +117,8 @@ export default function AnnotationPage() {
         const first = Object.keys(normalized)[0] || "";
         setSelectedObject(first);
         setPoints(first ? normalized[first] : []);
+        setMarkAsTarget(isTargetName(first));
+        setTargetToggleTouched(false);
       } catch (err) {
         setStatus(err.message);
       }
@@ -121,6 +129,69 @@ export default function AnnotationPage() {
   function updateCache(frameIndex, updatedObjects) {
     if (!sessionId) return;
     annotationsCache.current.set(`${sessionId}:${frameIndex}`, updatedObjects);
+  }
+
+  function isTargetName(name) {
+    return String(name || "").toLowerCase().includes("target");
+  }
+
+  function normalizeObjectName(name, targetFlag) {
+    const trimmed = String(name || "").trim();
+    if (!trimmed) return "";
+    if (targetFlag && !isTargetName(trimmed)) {
+      return `target_${trimmed}`;
+    }
+    return trimmed;
+  }
+
+  function displayObjectName(name) {
+    const raw = String(name || "");
+    const lower = raw.toLowerCase();
+    if (lower.startsWith("target_")) {
+      return raw.slice("target_".length);
+    }
+    if (lower.startsWith("target-")) {
+      return raw.slice("target-".length);
+    }
+    if (lower.startsWith("target ")) {
+      return raw.slice("target ".length);
+    }
+    return raw;
+  }
+
+  function renameObjectKey(oldName, newName) {
+    if (!oldName || !newName || oldName === newName) return;
+    const updated = { ...frameObjects };
+    if (!updated[oldName]) return;
+    if (updated[newName]) {
+      const merged = mergePoints(updated[newName], updated[oldName]);
+      updated[newName] = merged;
+      delete updated[oldName];
+    } else {
+      updated[newName] = updated[oldName];
+      delete updated[oldName];
+    }
+    setFrameObjects(updated);
+    setObjectList(Object.keys(updated));
+    setSelectedObject(newName);
+    setPoints(updated[newName] || []);
+    setMarkAsTarget(isTargetName(newName));
+    updateCache(currentIndex, updated);
+  }
+
+  function mergePoints(primary, secondary) {
+    const merged = [];
+    const seen = new Set();
+    const addPoint = (point) => {
+      if (!point) return;
+      const key = `${Math.round(point.x)}:${Math.round(point.y)}:${point.label}`;
+      if (seen.has(key)) return;
+      seen.add(key);
+      merged.push(point);
+    };
+    (primary || []).forEach(addPoint);
+    (secondary || []).forEach(addPoint);
+    return merged;
   }
 
   function removePoint(pointId) {
@@ -191,19 +262,68 @@ export default function AnnotationPage() {
       setStatus("Add at least one point before saving.");
       return;
     }
+    let objectNameToSave = selectedObject;
+    let updatedObjects = frameObjects;
+    let previousObjectName = null;
+    if (markAsTarget) {
+      const targetName = normalizeObjectName(selectedObject, true);
+      if (targetName !== selectedObject) {
+        updatedObjects = { ...frameObjects };
+        if (updatedObjects[targetName]) {
+          updatedObjects[targetName] = mergePoints(updatedObjects[targetName], updatedObjects[selectedObject]);
+        } else {
+          updatedObjects[targetName] = updatedObjects[selectedObject];
+        }
+        delete updatedObjects[selectedObject];
+        objectNameToSave = targetName;
+        previousObjectName = selectedObject;
+      }
+    } else if (isTargetName(selectedObject) && targetToggleTouched) {
+      const baseName = displayObjectName(selectedObject).trim() || selectedObject;
+      if (baseName !== selectedObject) {
+        updatedObjects = { ...frameObjects };
+        if (updatedObjects[baseName]) {
+          updatedObjects[baseName] = mergePoints(updatedObjects[baseName], updatedObjects[selectedObject]);
+        } else {
+          updatedObjects[baseName] = updatedObjects[selectedObject];
+        }
+        delete updatedObjects[selectedObject];
+        objectNameToSave = baseName;
+        previousObjectName = selectedObject;
+      }
+    }
+    const pointsToSave = (updatedObjects[objectNameToSave] || []).map(({ x, y, label }) => ({
+      x,
+      y,
+      label,
+    }));
+    if (pointsToSave.length === 0) {
+      setStatus("Add at least one point before saving.");
+      return;
+    }
     try {
       setBusy(true);
       await submitAnnotation({
         session_id: sessionId,
         frame_index: currentIndex,
-        object_name: selectedObject,
-        points: (frameObjects[selectedObject] || []).map(({ x, y, label }) => ({ x, y, label })),
+        object_name: objectNameToSave,
+        previous_object_name: previousObjectName,
+        points: pointsToSave,
       });
       setSavedCounts((prev) => ({
         ...prev,
-        [selectedObject]: (frameObjects[selectedObject] || []).length,
+        ...(previousObjectName ? { [previousObjectName]: 0 } : {}),
+        [objectNameToSave]: pointsToSave.length,
       }));
-      updateCache(currentIndex, frameObjects);
+      if (updatedObjects !== frameObjects) {
+        setFrameObjects(updatedObjects);
+        setObjectList(Object.keys(updatedObjects));
+        setSelectedObject(objectNameToSave);
+        setPoints(updatedObjects[objectNameToSave] || []);
+      }
+      updateCache(currentIndex, updatedObjects);
+      setMarkAsTarget(isTargetName(objectNameToSave));
+      setTargetToggleTouched(false);
       setStatus("Points saved.");
     } catch (err) {
       setStatus(err.message);
@@ -252,7 +372,7 @@ export default function AnnotationPage() {
   }
 
   function handleAddObject() {
-    const name = objectName.trim();
+    const name = normalizeObjectName(objectName, markAsTarget);
     if (!name) {
       setStatus("Enter an object name.");
       return;
@@ -261,6 +381,8 @@ export default function AnnotationPage() {
       setSelectedObject(name);
       setPoints(frameObjects[name]);
       setObjectName("");
+      setMarkAsTarget(isTargetName(name));
+      setTargetToggleTouched(false);
       return;
     }
     const updated = { ...frameObjects, [name]: [] };
@@ -271,6 +393,8 @@ export default function AnnotationPage() {
     setPoints([]);
     updateCache(currentIndex, updated);
     setObjectName("");
+    setMarkAsTarget(isTargetName(name));
+    setTargetToggleTouched(false);
   }
 
   const hasSavedObject = Object.entries(savedCounts).some(
@@ -314,6 +438,7 @@ export default function AnnotationPage() {
         .point-marker.negative { background: #ef4444; }
         .keyboard-hint { background: #f3f4f6; border: 2px solid #e5e7eb; border-radius: 8px; padding: 8px 12px; font-size: 13px; display: inline-flex; align-items: center; gap: 6px; }
         .key { background: white; border: 2px solid #d1d5db; border-radius: 4px; padding: 2px 8px; font-weight: 600; font-size: 12px; }
+        .target-pill { display: inline-flex; align-items: center; gap: 6px; font-size: 11px; padding: 2px 8px; border-radius: 999px; background: #cffafe; color: #0f172a; border: 1px solid #67e8f9; }
         .modal-backdrop { position: fixed; inset: 0; background: rgba(0,0,0,0.65); display: flex; align-items: center; justify-content: center; z-index: 1000; }
         .modal-card { background: white; border-radius: 12px; padding: 16px; width: min(900px, 90vw); box-shadow: 0 20px 40px rgba(0,0,0,0.3); }
         .modal-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px; }
@@ -435,10 +560,21 @@ export default function AnnotationPage() {
                 <h2 className="text-xl font-bold mb-4">Objects</h2>
                 <input
                   type="text"
-                  placeholder="Object name (use 'target')"
+                  placeholder="Object name"
                   value={objectName}
                   onChange={(event) => setObjectName(event.target.value)}
                 />
+                <label className="flex items-center gap-2 text-sm mt-3">
+                  <input
+                    type="checkbox"
+                    checked={markAsTarget}
+                    onChange={(event) => {
+                      setMarkAsTarget(event.target.checked);
+                      setTargetToggleTouched(true);
+                    }}
+                  />
+                  Mark selected object as target
+                </label>
                 <div className="flex gap-2 mt-3">
                   <button className="btn-secondary" onClick={handleAddObject}>Add Object</button>
                   <button className="btn-primary" onClick={handleSavePoints} disabled={busy}>Save Points</button>
@@ -452,9 +588,14 @@ export default function AnnotationPage() {
                       onClick={() => {
                         setSelectedObject(name);
                         setPoints(frameObjects[name] || []);
+                        setMarkAsTarget(isTargetName(name));
+                        setTargetToggleTouched(false);
                       }}
                     >
-                      <div className="font-medium">{name}</div>
+                      <div className="font-medium flex items-center gap-2">
+                        <span>{displayObjectName(name)}</span>
+                        {isTargetName(name) && <span className="target-pill">Target</span>}
+                      </div>
                       <div className="text-xs text-gray-500">{(frameObjects[name] || []).length} points</div>
                     </div>
                   ))}

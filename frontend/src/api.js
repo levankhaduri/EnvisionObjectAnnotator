@@ -25,6 +25,18 @@ export async function uploadVideo(sessionId, file) {
   return res.json();
 }
 
+export async function createSampleClip(sessionId, durationSeconds = 10) {
+  const res = await fetch(`${API_BASE}/uploads/sample`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ session_id: sessionId, duration_seconds: durationSeconds }),
+  });
+  if (!res.ok) {
+    throw new Error("Failed to create sample clip");
+  }
+  return res.json();
+}
+
 export async function updateConfig(payload) {
   const res = await fetch(`${API_BASE}/config`, {
     method: "POST",
