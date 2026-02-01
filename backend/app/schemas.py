@@ -95,3 +95,18 @@ class FrameListResponse(BaseModel):
 class SampleClipRequest(BaseModel):
     session_id: str
     duration_seconds: float = 10.0
+
+
+class SuggestedFrame(BaseModel):
+    frame_index: int
+    score: float
+    sharpness: float
+    brightness: float
+    method: str  # "basic" or "dinov2"
+
+
+class FrameSuggestionResponse(BaseModel):
+    session_id: str
+    suggested_frames: List[SuggestedFrame]
+    total_analyzed: int
+    method_used: str

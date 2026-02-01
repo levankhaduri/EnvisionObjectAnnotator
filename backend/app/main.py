@@ -20,9 +20,12 @@ from .schemas import (
     FrameExtractionRequest,
     FrameListResponse,
     SampleClipRequest,
+    FrameSuggestionResponse,
+    SuggestedFrame,
 )
 from .state import state
 from .processing import start_background_job, test_mask_preview, list_available_models
+from .frame_analysis import suggest_optimal_frames
 
 
 def _parse_ffprobe_rate(value):
@@ -277,6 +280,56 @@ def list_frames(session_id: str):
     )
 
 
+@app.get("/frames/suggest/{session_id}", response_model=FrameSuggestionResponse)
+def suggest_frames(session_id: str, top_k: int = 7, use_dinov2: bool = True):
+    """Suggest optimal frames for annotation based on quality and content."""
+    print(f"[DEBUG] suggest_frames called: session_id={session_id}, top_k={top_k}, use_dinov2={use_dinov2}")
+
+    try:
+        session = state.get_session(session_id)
+        print(f"[DEBUG] Session found: {session.id}")
+    except KeyError as e:
+        print(f"[DEBUG] Session not found: {e}")
+        raise HTTPException(status_code=404, detail="Session not found")
+
+    frames_dir = SESSIONS_DIR / session_id / "frames"
+    print(f"[DEBUG] Checking frames_dir: {frames_dir}, exists={frames_dir.exists()}")
+
+    if not frames_dir.exists():
+        raise HTTPException(status_code=404, detail="Frames not extracted")
+
+    try:
+        print(f"[DEBUG] Starting frame analysis...")
+        suggested = suggest_optimal_frames(
+            frames_dir=frames_dir,
+            top_k=top_k,
+            use_dinov2=use_dinov2,
+            max_samples=50
+        )
+        print(f"[DEBUG] Analysis complete: {len(suggested)} frames suggested")
+
+        if not suggested:
+            raise HTTPException(status_code=500, detail="No frames could be analyzed")
+
+        method_used = suggested[0]["method"] if suggested else "basic"
+
+        return FrameSuggestionResponse(
+            session_id=session_id,
+            suggested_frames=[
+                SuggestedFrame(**frame_data) for frame_data in suggested
+            ],
+            total_analyzed=min(50, len(list(frames_dir.glob("*.jpg")))),
+            method_used=method_used
+        )
+    except HTTPException:
+        raise
+    except Exception as exc:
+        print(f"[DEBUG] Exception in suggest_frames: {type(exc).__name__}: {exc}")
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=f"Frame suggestion failed: {exc}")
+
+
 @app.get("/frames/{session_id}/{frame_name}")
 def get_frame(session_id: str, frame_name: str):
     try:
@@ -325,6 +378,50 @@ def get_frame_annotations(session_id: str, frame_index: int):
         raise HTTPException(status_code=500, detail="Corrupted annotation file")
 
     return data
+
+
+@app.get("/annotation/objects/{session_id}")
+def get_session_objects(session_id: str):
+    """Get all unique object names annotated in this session."""
+    try:
+        state.get_session(session_id)
+    except KeyError:
+        raise HTTPException(status_code=404, detail="Session not found")
+
+    annotations_dir = SESSIONS_DIR / session_id / "annotations"
+
+    if not annotations_dir.exists():
+        return {"objects": []}
+
+    # Collect all unique object names across all frames
+    all_objects = set()
+    frames_with_objects = {}  # {object_name: [frame_indices]}
+
+    for frame_file in sorted(annotations_dir.glob("frame_*.json")):
+        try:
+            frame_idx = int(frame_file.stem.split("_")[1])
+            data = json.loads(frame_file.read_text())
+            objects = data.get("objects", {})
+
+            for obj_name in objects.keys():
+                all_objects.add(obj_name)
+                if obj_name not in frames_with_objects:
+                    frames_with_objects[obj_name] = []
+                frames_with_objects[obj_name].append(frame_idx)
+        except (ValueError, json.JSONDecodeError):
+            continue
+
+    # Return sorted list with frame counts
+    object_list = [
+        {
+            "name": obj_name,
+            "frame_count": len(frames_with_objects[obj_name]),
+            "frames": sorted(frames_with_objects[obj_name])
+        }
+        for obj_name in sorted(all_objects)
+    ]
+
+    return {"objects": object_list}
 
 
 @app.post("/config", response_model=Session)

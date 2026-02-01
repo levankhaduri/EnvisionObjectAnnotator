@@ -358,12 +358,13 @@ class HeadlessProcessor:
     def __init__(self, processor):
         self._processor = processor
 
-    def process(self, points_dict, labels_dict, object_names):
+    def process(self, points_dict, labels_dict, object_names, multiframe_data=None):
         return self._processor.process_video_with_memory_management(
             points_dict,
             labels_dict,
             object_names,
             debug=True,
+            multiframe_data=multiframe_data,
         )
 
     def get_partial_results(self):
@@ -432,6 +433,68 @@ def _load_reference_annotations(session_id, reference_frame):
         raise ValueError("No valid points found for reference frame")
 
     return points_dict, labels_dict, object_names
+
+
+def _load_multiframe_annotations(session_id):
+    """
+    Load annotations from all annotated frames.
+    Returns a dict of {frame_idx: (points_dict, labels_dict, object_names)}.
+    Also returns a global object_name_to_id mapping for consistency across frames.
+    """
+    annotations_dir = SESSIONS_DIR / session_id / "annotations"
+    if not annotations_dir.exists():
+        raise FileNotFoundError("No annotations directory found")
+
+    # Collect all annotated frames
+    frame_annotations = {}
+    global_object_names = set()
+
+    for frame_file in sorted(annotations_dir.glob("frame_*.json")):
+        try:
+            frame_idx = int(frame_file.stem.split("_")[1])
+            data = json.loads(frame_file.read_text())
+            objects = data.get("objects", {})
+            if objects:
+                frame_annotations[frame_idx] = objects
+                global_object_names.update(objects.keys())
+        except (ValueError, json.JSONDecodeError):
+            continue
+
+    if not frame_annotations:
+        raise FileNotFoundError("No valid annotations found in any frame")
+
+    # Create global object ID mapping (same object name = same ID across frames)
+    object_name_to_id = {name: idx for idx, name in enumerate(sorted(global_object_names), start=1)}
+
+    # Convert to points/labels format for each frame
+    multiframe_data = {}
+    for frame_idx, objects in frame_annotations.items():
+        points_dict = {}
+        labels_dict = {}
+        object_names = {}
+
+        for obj_name, points in objects.items():
+            if not points:
+                continue
+
+            coords = [[p["x"], p["y"]] for p in points]
+            labels = [p["label"] for p in points]
+
+            if len(coords) != len(labels) or not coords:
+                continue
+
+            obj_id = object_name_to_id[obj_name]
+            object_names[obj_id] = obj_name
+            points_dict[obj_id] = coords
+            labels_dict[obj_id] = labels
+
+        if points_dict:
+            multiframe_data[frame_idx] = (points_dict, labels_dict, object_names)
+
+    if not multiframe_data:
+        raise ValueError("No valid points found in any annotated frame")
+
+    return multiframe_data, object_name_to_id
 
 
 def run_processing(session_id):
@@ -540,18 +603,46 @@ def run_processing(session_id):
         % (model_key, reference_frame, batch_size, frame_count)
     )
 
+    # Initialize variables
+    multiframe_data = None
+    is_multiframe = False
+
+    # Try to load multiframe annotations first
     try:
         _set_status(session_id, "initializing", 0.05, "Loading annotations")
-        points_dict, labels_dict, object_names = _load_reference_annotations(session_id, reference_frame)
+        multiframe_data, object_name_to_id = _load_multiframe_annotations(session_id)
+
+        # Build global object names registry
+        object_names = {obj_id: obj_name for obj_name, obj_id in object_name_to_id.items()}
+
+        if len(multiframe_data) == 1:
+            # Single frame - use traditional approach
+            frame_idx = list(multiframe_data.keys())[0]
+            points_dict, labels_dict, _ = multiframe_data[frame_idx]
+            reference_frame = frame_idx
+            is_multiframe = False
+            _log_debug(
+                f"single reference frame: frame={reference_frame} objects={len(object_names)} points={sum(len(v) for v in points_dict.values())}"
+            )
+        else:
+            # Multiple frames - use ALL as conditioning frames
+            sorted_frames = sorted(multiframe_data.keys())
+            reference_frame = sorted_frames[0]  # Use earliest as primary reference
+            is_multiframe = True
+
+            # Prepare multiframe data for processor
+            # We'll pass all frames to the processor to add as conditioning frames
+            points_dict, labels_dict, _ = multiframe_data[reference_frame]
+
+            _log_debug(
+                f"multiframe mode: frames={sorted_frames} total_objects={len(object_names)} primary_ref={reference_frame}"
+            )
+
     except Exception as exc:
         _set_status(session_id, "error", 0.05, f"Annotation error: {exc}")
         _log_debug(f"annotation error: {exc}")
         _log_trace()
         return
-    _log_debug(
-        "annotations loaded: objects=%s points=%s"
-        % (len(object_names), sum(len(v) for v in points_dict.values()))
-    )
     annotations_done = time.perf_counter()
 
     try:
@@ -627,6 +718,7 @@ def run_processing(session_id):
             mask_store_dir=str(SESSIONS_DIR / session_id / "mask_cache"),
             process_start_frame=process_start_frame,
             process_end_frame=process_end_frame,
+            enable_bidirectional=True,
         )
         wrapped = HeadlessProcessor(processor)
     except ImportError as exc:
@@ -748,11 +840,23 @@ def run_processing(session_id):
 
     try:
         _set_status(session_id, "processing", 0.2, "Processing frames")
-        results = wrapped.process(points_dict, labels_dict, object_names)
+        # Pass multiframe_data if available (multiframe mode)
+        _log_debug(f"DEBUG: is_multiframe={is_multiframe}, multiframe_data type={type(multiframe_data).__name__}")
+        mf_data = multiframe_data if is_multiframe else None
+        _log_debug(f"DEBUG: mf_data type={type(mf_data).__name__}, mf_data={'dict with ' + str(len(mf_data)) + ' frames' if mf_data else 'None'}")
+        results = wrapped.process(points_dict, labels_dict, object_names, multiframe_data=mf_data)
         if not results:
             _set_status(session_id, "error", 0.6, "Processing failed")
             _log_debug("processing failed: no results")
             return
+    except NameError as exc:
+        full_trace = traceback.format_exc()
+        error_log.write_text(full_trace)
+        _log_debug(f"NameError during processing: {exc}")
+        _log_debug(f"Full traceback:\n{full_trace}")
+        _log_trace()
+        _set_status(session_id, "error", 0.6, f"NameError: {exc}")
+        return
     except Exception as exc:
         error_log.write_text(traceback.format_exc())
         _log_debug(f"processing error: {exc}")

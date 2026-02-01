@@ -547,6 +547,7 @@ class UltraOptimizedProcessor:
         disk_store_max_in_memory=50,
         ram_pressure_threshold=RAM_PRESSURE_THRESHOLD,
         disk_store_enabled=True,
+        enable_bidirectional=True,
     ):
         self.predictor = predictor
         self.full_video_dir = video_dir
@@ -579,6 +580,7 @@ class UltraOptimizedProcessor:
         self.disk_store_max_in_memory = disk_store_max_in_memory
         self.ram_pressure_threshold = ram_pressure_threshold
         self.disk_store_enabled = disk_store_enabled
+        self.enable_bidirectional = enable_bidirectional
         self._mask_store = None
         self._disk_store_active = False
         self.frame_index_map = None
@@ -1076,7 +1078,7 @@ class UltraOptimizedProcessor:
                 self._store_frame_results(results, missing, prev_masks)
         return results
 
-    def process_video_with_memory_management(self, points_dict, labels_dict, object_names, debug=True):
+    def process_video_with_memory_management(self, points_dict, labels_dict, object_names, debug=True, multiframe_data=None):
         """Process video with ultra memory management and improved overlap detection."""
         last_exc = None
         self.partial_results = {}
@@ -1104,10 +1106,10 @@ class UltraOptimizedProcessor:
                             % (attempt + 1, self.batch_size, getattr(self.predictor, "device", "unknown"))
                         )
                     if attempt == 0:
-                        return self._process_standard_optimized(points_dict, labels_dict, object_names, debug)
+                        return self._process_standard_optimized(points_dict, labels_dict, object_names, debug, multiframe_data)
                     if attempt == 1:
                         self.batch_size = self.batch_size // 2
-                        return self._process_standard_optimized(points_dict, labels_dict, object_names, debug)
+                        return self._process_standard_optimized(points_dict, labels_dict, object_names, debug, multiframe_data)
                     return self._process_cpu_fallback(points_dict, labels_dict, object_names, debug)
                 except RuntimeError as exc:
                     if "out of memory" in str(exc).lower():
@@ -1132,7 +1134,7 @@ class UltraOptimizedProcessor:
         finally:
             ultra_cleanup_memory()
 
-    def _process_standard_optimized(self, points_dict, labels_dict, object_names, debug):
+    def _process_standard_optimized(self, points_dict, labels_dict, object_names, debug, multiframe_data=None):
         self._prepare_frame_source(points_dict)
         image_size = getattr(self.predictor, "image_size", 1024)
         bytes_per_frame = image_size * image_size * 3 * 4
@@ -1198,9 +1200,9 @@ class UltraOptimizedProcessor:
 
         total_frames = len(self.frame_names)
         start_frame = max(0, min(self.reference_frame, total_frames - 1))
-        range_start = self.process_start_frame if self.process_start_frame is not None else start_frame
+        range_start = self.process_start_frame if self.process_start_frame is not None else 0
         range_end = self.process_end_frame if self.process_end_frame is not None else total_frames - 1
-        range_start = max(start_frame, min(int(range_start), total_frames - 1))
+        range_start = max(0, min(int(range_start), total_frames - 1))
         range_end = max(range_start, min(int(range_end), total_frames - 1))
         total_to_process = max(0, range_end - range_start + 1)
         if self.process_start_frame is not None or self.process_end_frame is not None:
@@ -1306,6 +1308,7 @@ class UltraOptimizedProcessor:
 
         with tqdm(total=total_to_process, desc="Processing frames") as pbar:
             if chunk_size is None:
+                # Add prompts from primary reference frame
                 for obj_id in points_dict:
                     try:
                         points = np.array(points_dict[obj_id], dtype=np.float32)
@@ -1333,15 +1336,145 @@ class UltraOptimizedProcessor:
                             self._log(traceback.format_exc())
                         print(f"  Error adding prompts for object {obj_id}: {exc}")
                         continue
-                max_track = range_end - start_frame
-                max_track = max(0, max_track)
+
+                # Multiframe: Add conditioning frames from other annotated frames
+                if multiframe_data and len(multiframe_data) > 1:
+                    if debug:
+                        self._log(f"multiframe: adding {len(multiframe_data)-1} additional conditioning frames")
+
+                    for frame_idx, (frame_points, frame_labels, frame_obj_names) in multiframe_data.items():
+                        if frame_idx == start_frame:
+                            continue  # Skip primary reference (already added)
+
+                        for obj_id in frame_points:
+                            try:
+                                points = np.array(frame_points[obj_id], dtype=np.float32)
+                                labels = np.array(frame_labels[obj_id], dtype=np.int32)
+                                _, out_obj_ids, out_mask_logits = self.predictor.add_new_points_or_box(
+                                    inference_state=inference_state,
+                                    frame_idx=frame_idx,
+                                    obj_id=obj_id,
+                                    points=points,
+                                    labels=labels,
+                                )
+                                del out_mask_logits, points, labels
+                                ultra_cleanup_memory()
+                                if debug:
+                                    self._log(f"multiframe: added conditioning frame {frame_idx} for obj_id={obj_id}")
+                            except Exception as exc:
+                                if debug:
+                                    self._log(f"multiframe: failed to add frame {frame_idx} obj_id={obj_id} error={exc}")
+                                continue
+                # Forward propagation
+                max_track_forward = range_end - start_frame
+                max_track_forward = max(0, max_track_forward)
                 last_processed, _ = _process_frames(
                     inference_state,
                     start_frame,
-                    max_track,
+                    max_track_forward,
                     range_start,
                 )
                 if last_processed is None:
+                    ultra_cleanup_memory()
+
+                # Backward propagation (if enabled and reference frame > range_start)
+                if self.enable_bidirectional and start_frame > range_start:
+                    if debug:
+                        self._log(f"bidirectional: starting backward propagation from frame {start_frame}")
+
+                    # Reset state for backward propagation
+                    self.predictor.reset_state(inference_state)
+                    ultra_cleanup_memory()
+
+                    # Re-add prompts
+                    for obj_id in points_dict:
+                        try:
+                            points = np.array(points_dict[obj_id], dtype=np.float32)
+                            labels = np.array(labels_dict[obj_id], dtype=np.int32)
+                            _, out_obj_ids, out_mask_logits = self.predictor.add_new_points_or_box(
+                                inference_state=inference_state,
+                                frame_idx=start_frame,
+                                obj_id=obj_id,
+                                points=points,
+                                labels=labels,
+                            )
+                            del out_mask_logits, points, labels
+                            ultra_cleanup_memory()
+                        except Exception as exc:
+                            if debug:
+                                self._log(f"backward add prompts failed: obj_id={obj_id} error={exc}")
+                            continue
+
+                    # Propagate backward
+                    max_track_backward = start_frame - range_start
+                    max_track_backward = max(0, max_track_backward)
+
+                    # Backward propagation loop
+                    last_masks_backward = {}
+                    for out_frame_idx, out_obj_ids, out_mask_logits in self.predictor.propagate_in_video(
+                        inference_state,
+                        start_frame_idx=start_frame,
+                        max_frame_num_to_track=max_track_backward,
+                        reverse=True,
+                    ):
+                        if out_frame_idx >= start_frame or out_frame_idx < range_start:
+                            continue
+
+                        try:
+                            global_frame_idx = self._map_frame_idx(out_frame_idx)
+
+                            if frame_count - last_memory_check >= 50:
+                                gpu_info = get_gpu_memory_info()
+                                if gpu_info and gpu_info["utilization_pct"] > 90:
+                                    ultra_cleanup_memory()
+                                is_pressured, mem_info = check_memory_pressure(self.ram_pressure_threshold)
+                                if is_pressured and not self._disk_store_active:
+                                    use_disk_mode = True
+                                    pct = mem_info.get("percent_used", 0) if mem_info else 0
+                                    self._enable_disk_store(results, reason=f"ram pressure {pct:.0f}%")
+                                last_memory_check = frame_count
+
+                            frame_results = {}
+                            for i, out_obj_id in enumerate(out_obj_ids):
+                                mask = (out_mask_logits[i] > 0.0).cpu().numpy()
+                                if len(mask.shape) == 3:
+                                    mask = mask[0]
+                                frame_results[out_obj_id] = mask.copy()
+                                last_masks_backward[out_obj_id] = mask.copy()
+                                del mask
+
+                            if self._disk_store_active:
+                                self._store_frame_results(results, global_frame_idx, frame_results)
+                            else:
+                                self._store_frame_results(results, global_frame_idx, frame_results)
+
+                            if targets_found:
+                                frame_analysis = self.overlap_tracker.track_frame_overlaps_batch(
+                                    global_frame_idx, frame_results, object_names
+                                )
+                                self._maybe_emit_preview(out_frame_idx, frame_results, frame_analysis)
+                                frame_analyses[global_frame_idx] = frame_analysis
+                                if frame_analysis.get("target_overlaps"):
+                                    overlap_count += 1
+                            else:
+                                self._maybe_emit_preview(out_frame_idx, frame_results, None)
+
+                            frame_count += 1
+                            pbar.update(1)
+
+                            if frame_count % 25 == 0:
+                                ultra_cleanup_memory()
+
+                            del out_mask_logits, frame_results
+                        except Exception as exc:
+                            if debug:
+                                self._log(f"backward frame error: frame_idx={out_frame_idx} error={exc}")
+                                self._log(traceback.format_exc())
+                            print(f"  Error processing backward frame {out_frame_idx}: {exc}")
+                            pbar.update(1)
+                            ultra_cleanup_memory()
+                            continue
+
                     ultra_cleanup_memory()
             else:
                 if debug:
@@ -1362,6 +1495,7 @@ class UltraOptimizedProcessor:
                         ultra_cleanup_memory()
                     seed_frame = start_frame if chunk_index == 0 else max(start_frame, next_start - chunk_overlap)
                     if chunk_index == 0:
+                        # Add prompts from primary reference frame
                         for obj_id in points_dict:
                             try:
                                 points = np.array(points_dict[obj_id], dtype=np.float32)
@@ -1389,6 +1523,31 @@ class UltraOptimizedProcessor:
                                     self._log(traceback.format_exc())
                                 print(f"  Error adding prompts for object {obj_id}: {exc}")
                                 continue
+
+                        # Multiframe: Add conditioning frames (chunked mode)
+                        if multiframe_data and len(multiframe_data) > 1:
+                            if debug:
+                                self._log(f"multiframe (chunked): adding {len(multiframe_data)-1} conditioning frames")
+                            for frame_idx, (frame_points, frame_labels, frame_obj_names) in multiframe_data.items():
+                                if frame_idx == start_frame:
+                                    continue
+                                for obj_id in frame_points:
+                                    try:
+                                        points = np.array(frame_points[obj_id], dtype=np.float32)
+                                        labels = np.array(frame_labels[obj_id], dtype=np.int32)
+                                        _, out_obj_ids, out_mask_logits = self.predictor.add_new_points_or_box(
+                                            inference_state=inference_state,
+                                            frame_idx=frame_idx,
+                                            obj_id=obj_id,
+                                            points=points,
+                                            labels=labels,
+                                        )
+                                        del out_mask_logits, points, labels
+                                        ultra_cleanup_memory()
+                                    except Exception as exc:
+                                        if debug:
+                                            self._log(f"multiframe (chunked): failed frame {frame_idx} obj_id={obj_id} error={exc}")
+                                        continue
                     else:
                         for obj_id, mask in (seed_masks or {}).items():
                             if mask is None:
@@ -1428,6 +1587,170 @@ class UltraOptimizedProcessor:
                         break
                     next_start = last_processed + 1
                     chunk_index += 1
+
+                # Backward propagation after chunking (chunked backward if needed)
+                if self.enable_bidirectional and start_frame > range_start:
+                    backward_range = start_frame - range_start
+                    if debug:
+                        self._log(f"bidirectional (chunked): starting backward, range={backward_range} frames")
+
+                    # Use chunking if backward range is large
+                    if chunk_size and backward_range > chunk_size:
+                        # CHUNKED backward propagation
+                        if debug:
+                            self._log(f"backward: using CHUNKED approach, chunks={chunk_size}")
+
+                        current_end = start_frame
+                        back_chunk_idx = 0
+                        seed_masks_back = None
+
+                        while current_end > range_start:
+                            chunk_start = max(range_start, current_end - chunk_size)
+
+                            # Re-init for each chunk
+                            inference_state = self.predictor.init_state(
+                                video_path=self.video_dir,
+                                offload_video_to_cpu=self.offload_video_to_cpu,
+                                offload_state_to_cpu=self.offload_state_to_cpu,
+                                async_loading_frames=async_loading_frames,
+                                max_cache_frames=max_cache_frames,
+                            )
+                            self.predictor.reset_state(inference_state)
+
+                            # First chunk: use prompts; later chunks: use seed masks
+                            if back_chunk_idx == 0:
+                                for obj_id in points_dict:
+                                    try:
+                                        points = np.array(points_dict[obj_id], dtype=np.float32)
+                                        labels = np.array(labels_dict[obj_id], dtype=np.int32)
+                                        self.predictor.add_new_points_or_box(
+                                            inference_state, current_end, obj_id, points, labels
+                                        )
+                                        del points, labels
+                                    except Exception:
+                                        continue
+                                # Multiframe conditioning
+                                if multiframe_data and len(multiframe_data) > 1:
+                                    for fr_idx, (fr_pts, fr_lbl, _) in multiframe_data.items():
+                                        if fr_idx == start_frame:
+                                            continue
+                                        for o_id in fr_pts:
+                                            try:
+                                                pts = np.array(fr_pts[o_id], dtype=np.float32)
+                                                lbl = np.array(fr_lbl[o_id], dtype=np.int32)
+                                                self.predictor.add_new_points_or_box(
+                                                    inference_state, fr_idx, o_id, pts, lbl
+                                                )
+                                                del pts, lbl
+                                            except Exception:
+                                                continue
+                            else:
+                                for obj_id, mask in (seed_masks_back or {}).items():
+                                    if mask is not None:
+                                        try:
+                                            self.predictor.add_new_mask(inference_state, current_end, obj_id, mask)
+                                        except Exception:
+                                            continue
+
+                            # Propagate this chunk backward
+                            chunk_seeds = {}
+                            for o_fi, o_oi, o_ml in self.predictor.propagate_in_video(
+                                inference_state, start_frame_idx=current_end,
+                                max_frame_num_to_track=current_end - chunk_start, reverse=True
+                            ):
+                                if o_fi >= current_end or o_fi < chunk_start:
+                                    continue
+                                try:
+                                    g_fi = self._map_frame_idx(o_fi)
+                                    fr_res = {}
+                                    for i, o_id in enumerate(o_oi):
+                                        msk = (o_ml[i] > 0.0).cpu().numpy()
+                                        if len(msk.shape) == 3:
+                                            msk = msk[0]
+                                        fr_res[o_id] = msk.copy()
+                                        if o_fi == chunk_start:
+                                            chunk_seeds[o_id] = msk.copy()
+                                        del msk
+                                    self._store_frame_results(results, g_fi, fr_res)
+                                    if targets_found:
+                                        fa = self.overlap_tracker.track_frame_overlaps_batch(g_fi, fr_res, object_names)
+                                        frame_analyses[g_fi] = fa
+                                    pbar.update(1)
+                                    del o_ml, fr_res
+                                except Exception:
+                                    pbar.update(1)
+                                    continue
+
+                            seed_masks_back = chunk_seeds
+                            current_end = chunk_start
+                            back_chunk_idx += 1
+                            ultra_cleanup_memory()
+
+                        if debug:
+                            self._log(f"backward: completed {back_chunk_idx} backward chunks")
+                    else:
+                        # SINGLE backward pass (small range)
+                        if debug:
+                            self._log(f"backward: using SINGLE pass, range={backward_range}")
+
+                        inference_state = self.predictor.init_state(
+                            video_path=self.video_dir,
+                            offload_video_to_cpu=self.offload_video_to_cpu,
+                            offload_state_to_cpu=self.offload_state_to_cpu,
+                            async_loading_frames=async_loading_frames,
+                            max_cache_frames=max_cache_frames,
+                        )
+                        self.predictor.reset_state(inference_state)
+
+                        # Add prompts
+                        for obj_id in points_dict:
+                            try:
+                                points = np.array(points_dict[obj_id], dtype=np.float32)
+                                labels = np.array(labels_dict[obj_id], dtype=np.int32)
+                                self.predictor.add_new_points_or_box(inference_state, start_frame, obj_id, points, labels)
+                                del points, labels
+                            except Exception:
+                                continue
+                        # Multiframe conditioning
+                        if multiframe_data and len(multiframe_data) > 1:
+                            for fr_idx, (fr_pts, fr_lbl, _) in multiframe_data.items():
+                                if fr_idx == start_frame:
+                                    continue
+                                for o_id in fr_pts:
+                                    try:
+                                        pts = np.array(fr_pts[o_id], dtype=np.float32)
+                                        lbl = np.array(fr_lbl[o_id], dtype=np.int32)
+                                        self.predictor.add_new_points_or_box(inference_state, fr_idx, o_id, pts, lbl)
+                                        del pts, lbl
+                                    except Exception:
+                                        continue
+
+                        # Single backward propagation
+                        for o_fi, o_oi, o_ml in self.predictor.propagate_in_video(
+                            inference_state, start_frame_idx=start_frame,
+                            max_frame_num_to_track=backward_range, reverse=True
+                        ):
+                            if o_fi >= start_frame or o_fi < range_start:
+                                continue
+                            try:
+                                g_fi = self._map_frame_idx(o_fi)
+                                fr_res = {}
+                                for i, o_id in enumerate(o_oi):
+                                    msk = (o_ml[i] > 0.0).cpu().numpy()
+                                    if len(msk.shape) == 3:
+                                        msk = msk[0]
+                                    fr_res[o_id] = msk.copy()
+                                    del msk
+                                self._store_frame_results(results, g_fi, fr_res)
+                                if targets_found:
+                                    fa = self.overlap_tracker.track_frame_overlaps_batch(g_fi, fr_res, object_names)
+                                    frame_analyses[g_fi] = fa
+                                pbar.update(1)
+                                del o_ml, fr_res
+                            except Exception:
+                                pbar.update(1)
+                                continue
+                        ultra_cleanup_memory()
 
         if targets_found:
             last_frame = max(results.keys()) if results else 0

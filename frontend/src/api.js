@@ -69,6 +69,15 @@ export async function listFrames(sessionId) {
   return res.json();
 }
 
+export async function suggestFrames(sessionId, topK = 7, useDinov2 = true) {
+  const params = new URLSearchParams({ top_k: topK, use_dinov2: useDinov2 });
+  const res = await fetch(`${API_BASE}/frames/suggest/${sessionId}?${params.toString()}`);
+  if (!res.ok) {
+    throw new Error("Failed to suggest frames");
+  }
+  return res.json();
+}
+
 export async function submitAnnotation(payload) {
   const res = await fetch(`${API_BASE}/annotation/points`, {
     method: "POST",
@@ -97,6 +106,14 @@ export async function fetchFrameAnnotations(sessionId, frameIndex) {
   const res = await fetch(`${API_BASE}/annotation/frames/${sessionId}/${frameIndex}`);
   if (!res.ok) {
     throw new Error("Failed to load annotations");
+  }
+  return res.json();
+}
+
+export async function fetchSessionObjects(sessionId) {
+  const res = await fetch(`${API_BASE}/annotation/objects/${sessionId}`);
+  if (!res.ok) {
+    throw new Error("Failed to load session objects");
   }
   return res.json();
 }

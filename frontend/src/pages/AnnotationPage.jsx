@@ -6,6 +6,8 @@ import {
   submitAnnotation,
   testMask,
   fetchFrameAnnotations,
+  suggestFrames,
+  fetchSessionObjects,
 } from "../api.js";
 
 export default function AnnotationPage() {
@@ -27,6 +29,11 @@ export default function AnnotationPage() {
   const [showPreview, setShowPreview] = useState(false);
   const [markAsTarget, setMarkAsTarget] = useState(false);
   const [targetToggleTouched, setTargetToggleTouched] = useState(false);
+  const [suggestedFrames, setSuggestedFrames] = useState([]);
+  const [showSuggestions, setShowSuggestions] = useState(false);
+  const [selectedSuggestions, setSelectedSuggestions] = useState(new Set());
+  const [loadingSuggestions, setLoadingSuggestions] = useState(false);
+  const [sessionObjects, setSessionObjects] = useState([]);
   const annotationsCache = useRef(new Map());
   const maskCache = useRef(new Map());
   const imgRef = useRef(null);
@@ -65,6 +72,19 @@ export default function AnnotationPage() {
       }
     }
     fetchFrames();
+  }, [sessionId]);
+
+  useEffect(() => {
+    async function loadSessionObjects() {
+      if (!sessionId) return;
+      try {
+        const data = await fetchSessionObjects(sessionId);
+        setSessionObjects(data.objects || []);
+      } catch (err) {
+        console.error("Failed to load session objects:", err);
+      }
+    }
+    loadSessionObjects();
   }, [sessionId]);
 
   useEffect(() => {
@@ -225,6 +245,60 @@ export default function AnnotationPage() {
       .join("|");
   }
 
+  async function handleSuggestFrames() {
+    // If we already have suggestions, just show the modal
+    if (suggestedFrames.length > 0) {
+      setShowSuggestions(true);
+      return;
+    }
+
+    // Otherwise, analyze frames
+    if (!sessionId || frames.length === 0) {
+      setStatus("Load frames before requesting suggestions.");
+      return;
+    }
+    setLoadingSuggestions(true);
+    setStatus("Analyzing frames...");
+    try {
+      const result = await suggestFrames(sessionId, 7, true);
+      setSuggestedFrames(result.suggested_frames || []);
+      setShowSuggestions(true);
+      setSelectedSuggestions(new Set());
+      setStatus(`Found ${result.suggested_frames?.length || 0} optimal frames (${result.method_used})`);
+    } catch (err) {
+      setStatus(err.message);
+      setSuggestedFrames([]);
+    } finally {
+      setLoadingSuggestions(false);
+    }
+  }
+
+  function toggleSuggestionSelection(frameIndex) {
+    const updated = new Set(selectedSuggestions);
+    if (updated.has(frameIndex)) {
+      updated.delete(frameIndex);
+    } else {
+      updated.add(frameIndex);
+    }
+    setSelectedSuggestions(updated);
+  }
+
+  function navigateToSuggestion(frameIndex) {
+    setCurrentIndex(frameIndex);
+    setShowSuggestions(false);
+  }
+
+  function applyMultiframeSelection() {
+    if (selectedSuggestions.size === 0) {
+      setStatus("Select at least one frame to annotate.");
+      return;
+    }
+    const indices = Array.from(selectedSuggestions).sort((a, b) => a - b);
+    setCurrentIndex(indices[0]);
+    setShowSuggestions(false);
+    setStatus(`Ready to annotate ${indices.length} selected frame(s). Navigate between them using the slider.`);
+  }
+
   function handleImageClick(event) {
     if (!imgRef.current || !selectedObject) return;
     const rect = imgRef.current.getBoundingClientRect();
@@ -325,6 +399,10 @@ export default function AnnotationPage() {
       setMarkAsTarget(isTargetName(objectNameToSave));
       setTargetToggleTouched(false);
       setStatus("Points saved.");
+      // Refresh session objects
+      fetchSessionObjects(sessionId)
+        .then((data) => setSessionObjects(data.objects || []))
+        .catch((err) => console.error("Failed to refresh session objects:", err));
     } catch (err) {
       setStatus(err.message);
     } finally {
@@ -552,15 +630,85 @@ export default function AnnotationPage() {
                     disabled={frames.length === 0}
                   />
                 </div>
+                <div className="mt-4">
+                  <button
+                    className="btn-secondary w-full"
+                    onClick={handleSuggestFrames}
+                    disabled={loadingSuggestions || frames.length === 0}
+                  >
+                    <i className={`fas ${suggestedFrames.length > 0 ? "fa-eye" : "fa-magic"} mr-2`}></i>
+                    {loadingSuggestions
+                      ? "Analyzing..."
+                      : suggestedFrames.length > 0
+                      ? `See Suggested Frames (${suggestedFrames.length})`
+                      : "Suggest Optimal Frames"}
+                  </button>
+                </div>
               </div>
             </div>
 
             <div className="space-y-6 sticky-objects">
               <div className="control-panel">
                 <h2 className="text-xl font-bold mb-4">Objects</h2>
+
+                {/* Session-wide Object Registry */}
+                {sessionObjects.length > 0 && (
+                  <div className="mb-4">
+                    <div className="text-sm font-semibold mb-2 text-gray-700">
+                      Annotated Objects (Click to select)
+                    </div>
+                    <div className="flex flex-wrap gap-2">
+                      {sessionObjects.map((obj) => {
+                        const isOnCurrentFrame = objectList.includes(obj.name);
+                        return (
+                          <button
+                            key={obj.name}
+                            onClick={() => {
+                              if (isOnCurrentFrame) {
+                                // Object exists on current frame - select it
+                                setSelectedObject(obj.name);
+                                setPoints(frameObjects[obj.name] || []);
+                                setMarkAsTarget(obj.name.toLowerCase().startsWith("target_"));
+                                setTargetToggleTouched(false);
+                                setObjectName(""); // Clear input
+                                setStatus(`Selected "${obj.name}" - add more points or save`);
+                              } else {
+                                // Object doesn't exist on current frame - add it
+                                const normalizedName = obj.name;
+                                setObjectName("");
+                                setMarkAsTarget(obj.name.toLowerCase().startsWith("target_"));
+
+                                // Directly add the object
+                                if (!frameObjects[normalizedName]) {
+                                  setFrameObjects((prev) => ({ ...prev, [normalizedName]: [] }));
+                                  setObjectList((prev) => [...prev, normalizedName]);
+                                }
+                                setSelectedObject(normalizedName);
+                                setPoints([]);
+                                setStatus(`Added "${normalizedName}" - click image to add points`);
+                              }
+                            }}
+                            className={`px-3 py-1.5 text-sm rounded-md border transition-colors ${
+                              isOnCurrentFrame
+                                ? "bg-green-100 border-green-400 text-green-800 hover:bg-green-200"
+                                : "bg-blue-50 border-blue-300 text-blue-800 hover:bg-blue-100"
+                            }`}
+                            title={isOnCurrentFrame
+                              ? `Select this object (${obj.frame_count} frames total)`
+                              : `Add to current frame (on ${obj.frame_count} frame${obj.frame_count !== 1 ? 's' : ''})`}
+                          >
+                            {obj.name}
+                            {isOnCurrentFrame && " ✓"}
+                          </button>
+                        );
+                      })}
+                    </div>
+                  </div>
+                )}
+
                 <input
                   type="text"
-                  placeholder="Object name"
+                  placeholder="Object name (or click above)"
                   value={objectName}
                   onChange={(event) => setObjectName(event.target.value)}
                 />
@@ -678,6 +826,126 @@ export default function AnnotationPage() {
                 <img src={maskPreviewUrl} alt="Mask preview" />
               ) : (
                 <div className="text-gray-400">No preview available</div>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {showSuggestions && (
+        <div className="modal-backdrop" onClick={() => setShowSuggestions(false)}>
+          <div className="modal-card" style={{ maxWidth: "1200px" }} onClick={(event) => event.stopPropagation()}>
+            <div className="modal-header">
+              <div>
+                <h3 className="text-lg font-semibold">Suggested Optimal Frames</h3>
+                <p className="text-sm text-gray-500 mt-1">
+                  Select frame(s) to annotate • Higher scores indicate better quality and content
+                </p>
+              </div>
+              <button className="modal-close" onClick={() => setShowSuggestions(false)}>Close</button>
+            </div>
+            <div style={{ maxHeight: "70vh", overflowY: "auto", padding: "16px" }}>
+              {suggestedFrames.length > 0 ? (
+                <>
+                  <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-4">
+                    {suggestedFrames.map((frame) => {
+                      const isSelected = selectedSuggestions.has(frame.frame_index);
+                      const frameName = frames[frame.frame_index];
+                      const thumbUrl = frameName
+                        ? `${API_BASE}/frames/thumbs/${sessionId}/${frameName}`
+                        : "";
+
+                      return (
+                        <div
+                          key={frame.frame_index}
+                          className="border-2 rounded-lg overflow-hidden cursor-pointer transition-all"
+                          style={{
+                            borderColor: isSelected ? "#000" : "#e5e7eb",
+                            background: isSelected ? "#f9fafb" : "#fff",
+                          }}
+                          onClick={() => toggleSuggestionSelection(frame.frame_index)}
+                        >
+                          {thumbUrl && (
+                            <img
+                              src={thumbUrl}
+                              alt={`Frame ${frame.frame_index}`}
+                              className="w-full h-32 object-cover"
+                            />
+                          )}
+                          <div className="p-3">
+                            <div className="flex justify-between items-center mb-2">
+                              <span className="font-semibold text-sm">Frame {frame.frame_index + 1}</span>
+                              <input
+                                type="checkbox"
+                                checked={isSelected}
+                                onChange={() => toggleSuggestionSelection(frame.frame_index)}
+                                onClick={(e) => e.stopPropagation()}
+                                className="w-4 h-4"
+                              />
+                            </div>
+                            <div className="text-xs space-y-1">
+                              <div className="flex justify-between">
+                                <span className="text-gray-500">Score:</span>
+                                <span className="font-medium">{(frame.score * 100).toFixed(1)}%</span>
+                              </div>
+                              <div className="flex justify-between">
+                                <span className="text-gray-500">Sharpness:</span>
+                                <span>{frame.sharpness.toFixed(1)}</span>
+                              </div>
+                              <div className="flex justify-between">
+                                <span className="text-gray-500">Brightness:</span>
+                                <span>{(frame.brightness * 100).toFixed(0)}%</span>
+                              </div>
+                              <div className="mt-2">
+                                <span
+                                  className="inline-block px-2 py-1 rounded text-xs"
+                                  style={{
+                                    background: frame.method === "dinov2" ? "#dcfce7" : "#dbeafe",
+                                    color: "#000",
+                                  }}
+                                >
+                                  {frame.method === "dinov2" ? "AI Enhanced" : "Basic"}
+                                </span>
+                              </div>
+                            </div>
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                  <div className="mt-6 flex justify-between items-center gap-4">
+                    <div className="text-sm text-gray-600">
+                      {selectedSuggestions.size > 0
+                        ? `${selectedSuggestions.size} frame(s) selected`
+                        : "Click frames to select"}
+                    </div>
+                    <div className="flex gap-3">
+                      <button
+                        className="btn-secondary"
+                        onClick={() => {
+                          if (selectedSuggestions.size > 0) {
+                            const firstSelected = Math.min(...Array.from(selectedSuggestions));
+                            navigateToSuggestion(firstSelected);
+                          }
+                        }}
+                        disabled={selectedSuggestions.size === 0}
+                      >
+                        Go to Selected
+                      </button>
+                      <button
+                        className="btn-primary"
+                        onClick={applyMultiframeSelection}
+                        disabled={selectedSuggestions.size === 0}
+                      >
+                        Start Annotating ({selectedSuggestions.size})
+                      </button>
+                    </div>
+                  </div>
+                </>
+              ) : (
+                <div className="text-center text-gray-400 py-8">
+                  No frame suggestions available
+                </div>
               )}
             </div>
           </div>
