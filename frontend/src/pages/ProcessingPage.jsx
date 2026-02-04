@@ -1,6 +1,6 @@
 import React, { useEffect, useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
-import { startProcessing, fetchProcessingStatus, getProcessingPreviewUrl } from "../api.js";
+import { startProcessing, fetchProcessingStatus, getProcessingPreviewUrl, cancelProcessing } from "../api.js";
 
 export default function ProcessingPage() {
   const [sessionId, setSessionId] = useState("");
@@ -8,6 +8,7 @@ export default function ProcessingPage() {
   const [progress, setProgress] = useState(0);
   const [message, setMessage] = useState("");
   const [busy, setBusy] = useState(false);
+  const [cancelling, setCancelling] = useState(false);
   const [previewUrl, setPreviewUrl] = useState("");
   const navigate = useNavigate();
 
@@ -71,6 +72,22 @@ export default function ProcessingPage() {
     }
   }
 
+  async function handleCancel() {
+    if (!sessionId) return;
+    try {
+      setCancelling(true);
+      await cancelProcessing(sessionId);
+      setMessage("Cancelling...");
+      // Wait a moment for status to update, then navigate
+      setTimeout(() => {
+        navigate("/annotation");
+      }, 1000);
+    } catch (err) {
+      setMessage(err.message);
+      setCancelling(false);
+    }
+  }
+
   return (
     <div className="bg-white text-black">
       <style>{`
@@ -106,9 +123,14 @@ export default function ProcessingPage() {
             EnvisionObjectAnnotator
           </div>
           <div className="flex space-x-4">
-            <Link className="btn-secondary" to="/annotation" aria-label="Cancel processing">
-              <i className="fas fa-times mr-2"></i>Cancel
-            </Link>
+            <button
+              className="btn-secondary"
+              onClick={handleCancel}
+              disabled={cancelling}
+              aria-label="Cancel processing"
+            >
+              <i className="fas fa-times mr-2"></i>{cancelling ? "Cancelling..." : "Cancel"}
+            </button>
             <Link className="btn-primary" to="/results" aria-label="View results">
               View Results<i className="fas fa-arrow-right ml-2"></i>
             </Link>

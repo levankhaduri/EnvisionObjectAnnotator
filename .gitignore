@@ -10,3 +10,8 @@ backend/data/
 __pycache__/
 *.pyc
 .vscode/
+
+# Internal documentation (keep locally)
+BIDIRECTIONAL_PROPAGATION.md
+FRAME_SUGGESTION_FEATURE.md
+Updates.md

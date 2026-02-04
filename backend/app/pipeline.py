@@ -548,6 +548,8 @@ class UltraOptimizedProcessor:
         ram_pressure_threshold=RAM_PRESSURE_THRESHOLD,
         disk_store_enabled=True,
         enable_bidirectional=True,
+        reprompt_interval=None,
+        cancel_callback=None,
     ):
         self.predictor = predictor
         self.full_video_dir = video_dir
@@ -581,6 +583,8 @@ class UltraOptimizedProcessor:
         self.ram_pressure_threshold = ram_pressure_threshold
         self.disk_store_enabled = disk_store_enabled
         self.enable_bidirectional = enable_bidirectional
+        self.reprompt_interval = reprompt_interval
+        self.cancel_callback = cancel_callback
         self._mask_store = None
         self._disk_store_active = False
         self.frame_index_map = None
@@ -1220,6 +1224,20 @@ class UltraOptimizedProcessor:
             chunk_size = None
         if chunk_size is not None and chunk_size >= total_to_process:
             chunk_size = None
+
+        # If no explicit chunk_size but reprompt_interval is set, use it for periodic re-prompting
+        # This leverages the chunked infrastructure to refresh tracking at intervals
+        reprompt_interval = self.reprompt_interval
+        if chunk_size is None and reprompt_interval is not None:
+            try:
+                reprompt_interval = int(reprompt_interval)
+                if reprompt_interval > 0 and reprompt_interval < total_to_process:
+                    chunk_size = reprompt_interval
+                    if debug:
+                        self._log(f"reprompt: using interval={reprompt_interval} as chunk_size for drift reduction")
+            except (TypeError, ValueError):
+                pass
+
         chunk_overlap = self.chunk_overlap if self.chunk_overlap is not None else 1
         try:
             chunk_overlap = max(1, int(chunk_overlap))
@@ -1235,11 +1253,17 @@ class UltraOptimizedProcessor:
             nonlocal frame_count, last_memory_check, overlap_count
             last_masks = {}
             last_processed = None
+            cancelled = False
             for out_frame_idx, out_obj_ids, out_mask_logits in self.predictor.propagate_in_video(
                 inference_state,
                 start_frame_idx=start_frame_idx,
                 max_frame_num_to_track=max_frame_num_to_track,
             ):
+                # Check for cancellation every frame
+                if self.cancel_callback and self.cancel_callback():
+                    cancelled = True
+                    break
+
                 if out_frame_idx < skip_until:
                     continue
                 try:
@@ -1304,7 +1328,7 @@ class UltraOptimizedProcessor:
                     pbar.update(1)
                     ultra_cleanup_memory()
                     continue
-            return last_processed, last_masks
+            return last_processed, last_masks, cancelled
 
         with tqdm(total=total_to_process, desc="Processing frames") as pbar:
             if chunk_size is None:
@@ -1368,12 +1392,16 @@ class UltraOptimizedProcessor:
                 # Forward propagation
                 max_track_forward = range_end - start_frame
                 max_track_forward = max(0, max_track_forward)
-                last_processed, _ = _process_frames(
+                last_processed, _, was_cancelled = _process_frames(
                     inference_state,
                     start_frame,
                     max_track_forward,
                     range_start,
                 )
+                if was_cancelled:
+                    if debug:
+                        self._log("processing cancelled during forward propagation")
+                    raise InterruptedError("Processing cancelled")
                 if last_processed is None:
                     ultra_cleanup_memory()
 
@@ -1411,12 +1439,18 @@ class UltraOptimizedProcessor:
 
                     # Backward propagation loop
                     last_masks_backward = {}
+                    backward_cancelled = False
                     for out_frame_idx, out_obj_ids, out_mask_logits in self.predictor.propagate_in_video(
                         inference_state,
                         start_frame_idx=start_frame,
                         max_frame_num_to_track=max_track_backward,
                         reverse=True,
                     ):
+                        # Check for cancellation
+                        if self.cancel_callback and self.cancel_callback():
+                            backward_cancelled = True
+                            break
+
                         if out_frame_idx >= start_frame or out_frame_idx < range_start:
                             continue
 
@@ -1475,6 +1509,10 @@ class UltraOptimizedProcessor:
                             ultra_cleanup_memory()
                             continue
 
+                    if backward_cancelled:
+                        if debug:
+                            self._log("processing cancelled during backward propagation")
+                        raise InterruptedError("Processing cancelled")
                     ultra_cleanup_memory()
             else:
                 if debug:
@@ -1575,7 +1613,7 @@ class UltraOptimizedProcessor:
                     max_track = max(max_track, skip_needed)
                     max_track = min(max_track, max(0, range_end - seed_frame))
 
-                    last_processed, seed_masks = _process_frames(
+                    last_processed, seed_masks, was_cancelled = _process_frames(
                         inference_state,
                         seed_frame,
                         max_track,
@@ -1583,6 +1621,10 @@ class UltraOptimizedProcessor:
                     )
                     self.predictor.reset_state(inference_state)
                     ultra_cleanup_memory()
+                    if was_cancelled:
+                        if debug:
+                            self._log("processing cancelled during chunked forward propagation")
+                        raise InterruptedError("Processing cancelled")
                     if last_processed is None:
                         break
                     next_start = last_processed + 1
@@ -1654,10 +1696,16 @@ class UltraOptimizedProcessor:
 
                             # Propagate this chunk backward
                             chunk_seeds = {}
+                            chunk_cancelled = False
                             for o_fi, o_oi, o_ml in self.predictor.propagate_in_video(
                                 inference_state, start_frame_idx=current_end,
                                 max_frame_num_to_track=current_end - chunk_start, reverse=True
                             ):
+                                # Check for cancellation
+                                if self.cancel_callback and self.cancel_callback():
+                                    chunk_cancelled = True
+                                    break
+
                                 if o_fi >= current_end or o_fi < chunk_start:
                                     continue
                                 try:
@@ -1680,6 +1728,11 @@ class UltraOptimizedProcessor:
                                 except Exception:
                                     pbar.update(1)
                                     continue
+
+                            if chunk_cancelled:
+                                if debug:
+                                    self._log("processing cancelled during chunked backward propagation")
+                                raise InterruptedError("Processing cancelled")
 
                             seed_masks_back = chunk_seeds
                             current_end = chunk_start
@@ -1726,10 +1779,16 @@ class UltraOptimizedProcessor:
                                         continue
 
                         # Single backward propagation
+                        single_back_cancelled = False
                         for o_fi, o_oi, o_ml in self.predictor.propagate_in_video(
                             inference_state, start_frame_idx=start_frame,
                             max_frame_num_to_track=backward_range, reverse=True
                         ):
+                            # Check for cancellation
+                            if self.cancel_callback and self.cancel_callback():
+                                single_back_cancelled = True
+                                break
+
                             if o_fi >= start_frame or o_fi < range_start:
                                 continue
                             try:
@@ -1750,6 +1809,10 @@ class UltraOptimizedProcessor:
                             except Exception:
                                 pbar.update(1)
                                 continue
+                        if single_back_cancelled:
+                            if debug:
+                                self._log("processing cancelled during single backward propagation")
+                            raise InterruptedError("Processing cancelled")
                         ultra_cleanup_memory()
 
         if targets_found:

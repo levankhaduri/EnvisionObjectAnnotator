@@ -333,7 +333,7 @@ def test_mask_preview(session_id, frame_index, object_name, points):
         point_labels=labels_arr,
         multimask_output=False,
         return_logits=True,
-        normalize_coords=True,
+        normalize_coords=False,  # Frontend sends pixel coordinates, not normalized
     )
 
     mask = masks[0] > 0.0
@@ -522,6 +522,17 @@ def run_processing(session_id):
             _append_log(f"    {line}")
 
     _log_debug(f"run start: session_id={session_id}")
+
+    # Clear any previous cancel flag
+    state.clear_cancel(session_id)
+
+    def _check_cancelled():
+        if state.is_cancelled(session_id):
+            _log_debug("processing cancelled by user")
+            _set_status(session_id, "cancelled", 0.0, "Processing cancelled")
+            return True
+        return False
+
     try:
         session = state.get_session(session_id)
     except KeyError:
@@ -678,6 +689,10 @@ def run_processing(session_id):
             % (resolved_model_key, model_label, device, checkpoint)
         )
 
+        # Check for cancellation after model loading
+        if _check_cancelled():
+            return
+
         if auto_tune:
             auto_tune_info = _auto_tune_settings(
                 frame_count=frame_count,
@@ -692,6 +707,16 @@ def run_processing(session_id):
         chunk_size = auto_tune_info["chunk_size"] if auto_tune_info else config.get("chunk_size")
         chunk_overlap = auto_tune_info["chunk_overlap"] if auto_tune_info else config.get("chunk_overlap", 1)
         compress_masks = auto_tune_info["compress_masks"] if auto_tune_info else config.get("compress_masks")
+        # Periodic re-prompting interval - refreshes tracking every N frames to reduce drift
+        # Default: 500 frames (can be configured or disabled by setting to None/0)
+        reprompt_interval = config.get("reprompt_interval", 500)
+        if reprompt_interval is not None:
+            try:
+                reprompt_interval = int(reprompt_interval)
+                if reprompt_interval <= 0:
+                    reprompt_interval = None
+            except (TypeError, ValueError):
+                reprompt_interval = 500
 
         processor = UltraOptimizedProcessor(
             predictor,
@@ -719,6 +744,8 @@ def run_processing(session_id):
             process_start_frame=process_start_frame,
             process_end_frame=process_end_frame,
             enable_bidirectional=True,
+            reprompt_interval=reprompt_interval,
+            cancel_callback=_check_cancelled,
         )
         wrapped = HeadlessProcessor(processor)
     except ImportError as exc:
@@ -849,6 +876,12 @@ def run_processing(session_id):
             _set_status(session_id, "error", 0.6, "Processing failed")
             _log_debug("processing failed: no results")
             return
+    except InterruptedError:
+        # Processing was cancelled by user
+        _log_debug("processing cancelled by user request")
+        _set_status(session_id, "cancelled", 0.0, "Processing cancelled")
+        state.clear_cancel(session_id)
+        return
     except NameError as exc:
         full_trace = traceback.format_exc()
         error_log.write_text(full_trace)

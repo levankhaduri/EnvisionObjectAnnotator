@@ -142,6 +142,16 @@ export function getProcessingPreviewUrl(sessionId) {
   return `${API_BASE}/processing/preview/${sessionId}`;
 }
 
+export async function cancelProcessing(sessionId) {
+  const res = await fetch(`${API_BASE}/processing/cancel/${sessionId}`, {
+    method: "POST",
+  });
+  if (!res.ok) {
+    throw new Error("Failed to cancel processing");
+  }
+  return res.json();
+}
+
 export async function fetchResults(sessionId) {
   const res = await fetch(`${API_BASE}/results/${sessionId}`);
   if (!res.ok) {

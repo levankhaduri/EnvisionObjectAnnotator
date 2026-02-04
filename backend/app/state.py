@@ -9,6 +9,7 @@ class AppState:
         self.sessions: Dict[str, Session] = {}
         self.processing: Dict[str, ProcessingStatus] = {}
         self.threads: Dict[str, threading.Thread] = {}
+        self.cancel_flags: Dict[str, bool] = {}
 
     def create_session(self, session: Session) -> None:
         with self._lock:
@@ -50,6 +51,19 @@ class AppState:
         with self._lock:
             if session_id in self.threads:
                 del self.threads[session_id]
+
+    def request_cancel(self, session_id: str) -> None:
+        with self._lock:
+            self.cancel_flags[session_id] = True
+
+    def is_cancelled(self, session_id: str) -> bool:
+        with self._lock:
+            return self.cancel_flags.get(session_id, False)
+
+    def clear_cancel(self, session_id: str) -> None:
+        with self._lock:
+            if session_id in self.cancel_flags:
+                del self.cancel_flags[session_id]
 
 
 state = AppState()

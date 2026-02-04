@@ -283,30 +283,23 @@ def list_frames(session_id: str):
 @app.get("/frames/suggest/{session_id}", response_model=FrameSuggestionResponse)
 def suggest_frames(session_id: str, top_k: int = 7, use_dinov2: bool = True):
     """Suggest optimal frames for annotation based on quality and content."""
-    print(f"[DEBUG] suggest_frames called: session_id={session_id}, top_k={top_k}, use_dinov2={use_dinov2}")
-
     try:
-        session = state.get_session(session_id)
-        print(f"[DEBUG] Session found: {session.id}")
-    except KeyError as e:
-        print(f"[DEBUG] Session not found: {e}")
+        state.get_session(session_id)
+    except KeyError:
         raise HTTPException(status_code=404, detail="Session not found")
 
     frames_dir = SESSIONS_DIR / session_id / "frames"
-    print(f"[DEBUG] Checking frames_dir: {frames_dir}, exists={frames_dir.exists()}")
 
     if not frames_dir.exists():
         raise HTTPException(status_code=404, detail="Frames not extracted")
 
     try:
-        print(f"[DEBUG] Starting frame analysis...")
         suggested = suggest_optimal_frames(
             frames_dir=frames_dir,
             top_k=top_k,
             use_dinov2=use_dinov2,
             max_samples=50
         )
-        print(f"[DEBUG] Analysis complete: {len(suggested)} frames suggested")
 
         if not suggested:
             raise HTTPException(status_code=500, detail="No frames could be analyzed")
@@ -324,9 +317,6 @@ def suggest_frames(session_id: str, top_k: int = 7, use_dinov2: bool = True):
     except HTTPException:
         raise
     except Exception as exc:
-        print(f"[DEBUG] Exception in suggest_frames: {type(exc).__name__}: {exc}")
-        import traceback
-        traceback.print_exc()
         raise HTTPException(status_code=500, detail=f"Frame suggestion failed: {exc}")
 
 
@@ -539,6 +529,21 @@ def get_processing_status(session_id: str):
         return state.get_processing(session_id)
     except KeyError:
         raise HTTPException(status_code=404, detail="Session not found")
+
+
+@app.post("/processing/cancel/{session_id}")
+def cancel_processing(session_id: str):
+    """Cancel an ongoing processing job."""
+    try:
+        status = state.get_processing(session_id)
+    except KeyError:
+        raise HTTPException(status_code=404, detail="Session not found")
+
+    if status.status not in ("processing", "starting", "initializing"):
+        return {"message": "Processing is not running", "cancelled": False}
+
+    state.request_cancel(session_id)
+    return {"message": "Cancel requested", "cancelled": True}
 
 
 @app.get("/processing/preview/{session_id}")
