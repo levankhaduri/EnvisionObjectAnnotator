@@ -7,6 +7,50 @@ import {
   testMask,
   fetchFrameAnnotations,
 } from "../api.js";
+import {
+  Button,
+  Grid,
+  Column,
+  Tile,
+  TextInput,
+  Checkbox,
+  Slider,
+  Tag,
+  InlineNotification,
+  InlineLoading,
+  Modal,
+  ProgressIndicator,
+  ProgressStep,
+  StructuredListWrapper,
+  StructuredListHead,
+  StructuredListRow,
+  StructuredListCell,
+  StructuredListBody,
+} from "@carbon/react";
+import {
+  ArrowLeft,
+  ArrowRight,
+  Add,
+  Save,
+  View,
+  TrashCan,
+  Undo,
+  ChevronLeft,
+  ChevronRight,
+  FlagFilled,
+  CircleFilled,
+  AddAlt,
+  SubtractAlt,
+  Keyboard,
+  Settings,
+  Play,
+  Image,
+  WarningAlt,
+  Close,
+  ZoomIn,
+  Cursor_1,
+  TouchInteraction,
+} from "@carbon/icons-react";
 
 export default function AnnotationPage() {
   const [sessionId, setSessionId] = useState("");
@@ -22,22 +66,89 @@ export default function AnnotationPage() {
   const [useThumbs, setUseThumbs] = useState(true);
   const [labelMode, setLabelMode] = useState(1);
   const [status, setStatus] = useState("Load a session to begin annotating.");
+  const [statusKind, setStatusKind] = useState("info");
   const [busy, setBusy] = useState(false);
   const [maskPreviewUrl, setMaskPreviewUrl] = useState("");
   const [showPreview, setShowPreview] = useState(false);
   const [markAsTarget, setMarkAsTarget] = useState(false);
   const [targetToggleTouched, setTargetToggleTouched] = useState(false);
+  const [loading, setLoading] = useState(true);
   const annotationsCache = useRef(new Map());
   const maskCache = useRef(new Map());
   const imgRef = useRef(null);
+  const objectInputRef = useRef(null);
   const navigate = useNavigate();
 
   useEffect(() => {
     const stored = localStorage.getItem("eoa_session");
     if (stored) {
-      setSessionId(stored);
+      fetch(`${API_BASE}/sessions/${stored}`)
+        .then((res) => {
+          if (res.ok) {
+            setSessionId(stored);
+          } else {
+            localStorage.removeItem("eoa_session");
+            setStatus("Session expired. Please return to Config page to start a new session.");
+            setStatusKind("warning");
+          }
+        })
+        .catch(() => {
+          localStorage.removeItem("eoa_session");
+          setStatus("Backend unavailable. Please check if the server is running.");
+          setStatusKind("error");
+        })
+        .finally(() => setLoading(false));
+    } else {
+      setLoading(false);
     }
   }, []);
+
+  // Keyboard shortcuts
+  useEffect(() => {
+    function handleKeyDown(e) {
+      if (e.target.tagName === "INPUT" || e.target.tagName === "TEXTAREA") return;
+      switch (e.key.toLowerCase()) {
+        case "c":
+          e.preventDefault();
+          objectInputRef.current?.focus();
+          break;
+        case "t":
+          e.preventDefault();
+          handleTestMask();
+          break;
+        case "enter":
+          e.preventDefault();
+          handleSavePoints();
+          break;
+        case "z":
+          if (e.ctrlKey || e.metaKey) {
+            e.preventDefault();
+            undoLastPoint();
+          }
+          break;
+        case "arrowleft":
+          e.preventDefault();
+          setCurrentIndex((prev) => Math.max(0, prev - 1));
+          break;
+        case "arrowright":
+          e.preventDefault();
+          setCurrentIndex((prev) => Math.min(frames.length - 1, prev + 1));
+          break;
+        case "1":
+          e.preventDefault();
+          setLabelMode(1);
+          break;
+        case "2":
+          e.preventDefault();
+          setLabelMode(0);
+          break;
+        default:
+          break;
+      }
+    }
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, [frames.length, selectedObject, frameObjects, sessionId, currentIndex]);
 
   useEffect(() => {
     annotationsCache.current.clear();
@@ -60,8 +171,10 @@ export default function AnnotationPage() {
         }
         setUseThumbs(Boolean(data.has_thumbnails));
         setStatus(data.frame_files?.length ? "Frames ready." : "No frames found.");
+        setStatusKind("info");
       } catch (err) {
         setStatus(err.message);
+        setStatusKind("error");
       }
     }
     fetchFrames();
@@ -121,6 +234,7 @@ export default function AnnotationPage() {
         setTargetToggleTouched(false);
       } catch (err) {
         setStatus(err.message);
+        setStatusKind("error");
       }
     }
     hydrateFrame();
@@ -147,36 +261,10 @@ export default function AnnotationPage() {
   function displayObjectName(name) {
     const raw = String(name || "");
     const lower = raw.toLowerCase();
-    if (lower.startsWith("target_")) {
-      return raw.slice("target_".length);
-    }
-    if (lower.startsWith("target-")) {
-      return raw.slice("target-".length);
-    }
-    if (lower.startsWith("target ")) {
-      return raw.slice("target ".length);
-    }
+    if (lower.startsWith("target_")) return raw.slice("target_".length);
+    if (lower.startsWith("target-")) return raw.slice("target-".length);
+    if (lower.startsWith("target ")) return raw.slice("target ".length);
     return raw;
-  }
-
-  function renameObjectKey(oldName, newName) {
-    if (!oldName || !newName || oldName === newName) return;
-    const updated = { ...frameObjects };
-    if (!updated[oldName]) return;
-    if (updated[newName]) {
-      const merged = mergePoints(updated[newName], updated[oldName]);
-      updated[newName] = merged;
-      delete updated[oldName];
-    } else {
-      updated[newName] = updated[oldName];
-      delete updated[oldName];
-    }
-    setFrameObjects(updated);
-    setObjectList(Object.keys(updated));
-    setSelectedObject(newName);
-    setPoints(updated[newName] || []);
-    setMarkAsTarget(isTargetName(newName));
-    updateCache(currentIndex, updated);
   }
 
   function mergePoints(primary, secondary) {
@@ -252,14 +340,17 @@ export default function AnnotationPage() {
   async function handleSavePoints() {
     if (!sessionId) {
       setStatus("Missing session. Return to Config.");
+      setStatusKind("error");
       return;
     }
     if (!selectedObject) {
       setStatus("Select or create an object before saving.");
+      setStatusKind("warning");
       return;
     }
     if (!frameObjects[selectedObject] || frameObjects[selectedObject].length === 0) {
       setStatus("Add at least one point before saving.");
+      setStatusKind("warning");
       return;
     }
     let objectNameToSave = selectedObject;
@@ -299,6 +390,7 @@ export default function AnnotationPage() {
     }));
     if (pointsToSave.length === 0) {
       setStatus("Add at least one point before saving.");
+      setStatusKind("warning");
       return;
     }
     try {
@@ -324,21 +416,30 @@ export default function AnnotationPage() {
       updateCache(currentIndex, updatedObjects);
       setMarkAsTarget(isTargetName(objectNameToSave));
       setTargetToggleTouched(false);
-      setStatus("Points saved.");
+      setStatus("Points saved successfully.");
+      setStatusKind("success");
     } catch (err) {
       setStatus(err.message);
+      setStatusKind("error");
     } finally {
       setBusy(false);
     }
   }
 
   async function handleTestMask() {
-    if (!sessionId || !selectedObject) {
+    if (!sessionId) {
+      setStatus("No session. Return to Config page to start a new session.");
+      setStatusKind("error");
+      return;
+    }
+    if (!selectedObject) {
       setStatus("Select an object to test.");
+      setStatusKind("warning");
       return;
     }
     if (!frameObjects[selectedObject] || frameObjects[selectedObject].length === 0) {
       setStatus("Add at least one point before testing.");
+      setStatusKind("warning");
       return;
     }
     const signature = buildMaskSignature(frameObjects[selectedObject]);
@@ -348,10 +449,13 @@ export default function AnnotationPage() {
       setMaskPreviewUrl(`${API_BASE}${cached}?t=${Date.now()}`);
       setShowPreview(true);
       setStatus("Loaded cached mask preview.");
+      setStatusKind("info");
       return;
     }
     try {
       setBusy(true);
+      setStatus("Generating mask preview...");
+      setStatusKind("info");
       const response = await testMask({
         session_id: sessionId,
         frame_index: currentIndex,
@@ -359,13 +463,16 @@ export default function AnnotationPage() {
         points: (frameObjects[selectedObject] || []).map(({ x, y, label }) => ({ x, y, label })),
       });
       setStatus(response.message || "Mask test complete.");
+      setStatusKind("success");
       if (response.preview_url) {
         maskCache.current.set(cacheKey, response.preview_url);
         setMaskPreviewUrl(`${API_BASE}${response.preview_url}?t=${Date.now()}`);
         setShowPreview(true);
       }
     } catch (err) {
-      setStatus(err.message);
+      console.error("Test mask error:", err);
+      setStatus(`Test mask failed: ${err.message}`);
+      setStatusKind("error");
     } finally {
       setBusy(false);
     }
@@ -375,6 +482,7 @@ export default function AnnotationPage() {
     const name = normalizeObjectName(objectName, markAsTarget);
     if (!name) {
       setStatus("Enter an object name.");
+      setStatusKind("warning");
       return;
     }
     if (frameObjects[name]) {
@@ -412,277 +520,390 @@ export default function AnnotationPage() {
       : "";
 
   return (
-    <div className="bg-white text-black">
-      <style>{`
-        body { font-family: 'Inter', sans-serif; }
-        .control-panel { background: white; border: 2px solid #e5e7eb; border-radius: 12px; padding: 24px; transition: all 0.3s ease; }
-        .control-panel:hover { border-color: #d1d5db; }
-        .btn-primary { background: black; color: white; padding: 12px 24px; border-radius: 8px; font-weight: 600; transition: all 0.3s ease; border: none; cursor: pointer; }
-        .btn-primary:hover:not(:disabled) { background: #374151; transform: translateY(-2px); box-shadow: 0 4px 12px rgba(0,0,0,0.2); }
-        .btn-primary:disabled { background: #d1d5db; cursor: not-allowed; transform: none; }
-        .btn-secondary { background: white; color: black; border: 2px solid black; padding: 12px 24px; border-radius: 8px; font-weight: 600; transition: all 0.3s ease; cursor: pointer; }
-        .btn-secondary:hover:not(:disabled) { background: black; color: white; }
-        .canvas-container { border: 2px solid #e5e7eb; border-radius: 12px; overflow: hidden; position: relative; background: #000; cursor: crosshair; }
-        .progress-steps { display: flex; align-items: center; justify-content: center; gap: 8px; margin-bottom: 32px; }
-        .step { display: flex; align-items: center; gap: 8px; }
-        .step-circle { width: 32px; height: 32px; border-radius: 50%; border: 2px solid #e5e7eb; display: flex; align-items: center; justify-content: center; font-weight: 600; font-size: 14px; }
-        .step-circle.active { background: black; color: white; border-color: black; }
-        .step-circle.completed { background: #d1d5db; color: white; border-color: #d1d5db; }
-        .step-line { width: 40px; height: 2px; background: #e5e7eb; }
-        .object-card { background: white; border: 2px solid #e5e7eb; border-radius: 8px; padding: 12px; transition: all 0.3s ease; }
-        .object-card.active { border-color: black; background: #f9fafb; }
-        .object-card:hover { border-color: #d1d5db; }
-        .sticky-objects { position: sticky; top: 110px; align-self: start; }
-        .point-marker { position: absolute; width: 12px; height: 12px; border-radius: 50%; border: 2px solid white; transform: translate(-50%, -50%); pointer-events: auto; cursor: pointer; box-shadow: 0 2px 4px rgba(0,0,0,0.3); }
-        .point-marker.positive { background: #22c55e; }
-        .point-marker.negative { background: #ef4444; }
-        .keyboard-hint { background: #f3f4f6; border: 2px solid #e5e7eb; border-radius: 8px; padding: 8px 12px; font-size: 13px; display: inline-flex; align-items: center; gap: 6px; }
-        .key { background: white; border: 2px solid #d1d5db; border-radius: 4px; padding: 2px 8px; font-weight: 600; font-size: 12px; }
-        .target-pill { display: inline-flex; align-items: center; gap: 6px; font-size: 11px; padding: 2px 8px; border-radius: 999px; background: #cffafe; color: #0f172a; border: 1px solid #67e8f9; }
-        .modal-backdrop { position: fixed; inset: 0; background: rgba(0,0,0,0.65); display: flex; align-items: center; justify-content: center; z-index: 1000; }
-        .modal-card { background: white; border-radius: 12px; padding: 16px; width: min(900px, 90vw); box-shadow: 0 20px 40px rgba(0,0,0,0.3); }
-        .modal-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px; }
-        .modal-close { background: black; color: white; border: none; border-radius: 6px; padding: 6px 12px; cursor: pointer; }
-        .modal-body { background: #000; border-radius: 8px; padding: 8px; display: flex; justify-content: center; align-items: center; }
-        .modal-body img { max-width: 100%; max-height: 70vh; object-fit: contain; }
-        .status-box { border-radius: 8px; padding: 10px 12px; font-size: 13px; margin-top: 12px; }
-        .status-box.error { background: #fee2e2; border: 1px solid #fecaca; color: #991b1b; }
-        input[type="text"] { border: 2px solid #e5e7eb; border-radius: 8px; padding: 10px 16px; width: 100%; transition: all 0.3s ease; }
-        input[type="text"]:focus { outline: none; border-color: black; }
-        input[type="range"] { -webkit-appearance: none; appearance: none; width: 100%; height: 8px; border-radius: 4px; background: #e5e7eb; outline: none; }
-        input[type="range"]::-webkit-slider-thumb { -webkit-appearance: none; appearance: none; width: 20px; height: 20px; border-radius: 50%; background: black; cursor: pointer; }
-      `}</style>
-
-      <header className="bg-white border-b-2 border-black fixed w-full z-50">
-        <nav className="container mx-auto px-6 py-4 flex justify-between items-center">
-          <div className="text-xl font-semibold flex items-center">
-            <i className="fas fa-eye mr-3"></i>
-            EnvisionObjectAnnotator
-          </div>
-          <div className="flex space-x-4">
-            <Link className="btn-secondary" to="/config" aria-label="Go back">
-              <i className="fas fa-arrow-left mr-2"></i>Back
-            </Link>
-            <button className="btn-primary" onClick={() => navigate("/processing")} disabled={busy || missingSteps.length > 0} aria-label="Proceed to processing">
-              Next Step<i className="fas fa-arrow-right ml-2"></i>
-            </button>
-          </div>
-        </nav>
+    <div className="app-shell">
+      {/* Header */}
+      <header
+        style={{
+          borderBottom: "1px solid #e0e0e0",
+          padding: "0 1rem",
+          height: "48px",
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "space-between",
+          backgroundColor: "#fff",
+          position: "sticky",
+          top: 0,
+          zIndex: 100,
+        }}
+      >
+        <div style={{ display: "flex", alignItems: "center", gap: "0.75rem" }}>
+          <TouchInteraction size={20} />
+          <span style={{ fontWeight: 600 }}>Annotation</span>
+          {selectedObject && (
+            <Tag type={isTargetName(selectedObject) ? "cyan" : "gray"} size="sm">
+              {displayObjectName(selectedObject)}
+            </Tag>
+          )}
+        </div>
+        <div style={{ display: "flex", gap: "0.5rem" }}>
+          <Button kind="secondary" size="sm" renderIcon={ArrowLeft} as={Link} to="/config">
+            Back
+          </Button>
+          <Button
+            size="sm"
+            renderIcon={ArrowRight}
+            onClick={() => navigate("/processing")}
+            disabled={busy || missingSteps.length > 0}
+          >
+            Process
+          </Button>
+        </div>
       </header>
 
-      <main className="pt-24 pb-16">
-        <div className="container mx-auto px-6">
-          <div className="progress-steps">
-            <div className="step">
-              <div className="step-circle completed">1</div>
-              <span className="text-sm font-medium text-gray-600">Setup</span>
-            </div>
-            <div className="step-line"></div>
-            <div className="step">
-              <div className="step-circle completed">2</div>
-              <span className="text-sm font-medium text-gray-600">Configuration</span>
-            </div>
-            <div className="step-line"></div>
-            <div className="step">
-              <div className="step-circle active">3</div>
-              <span className="text-sm font-medium">Annotation</span>
-            </div>
+      <main className="app-content">
+        <div className="page-container">
+          {/* Progress indicator */}
+          <div style={{ marginBottom: "1.5rem" }}>
+            <ProgressIndicator currentIndex={2} spaceEqually>
+              <ProgressStep label="Upload" secondaryLabel="Complete" />
+              <ProgressStep label="Configure" secondaryLabel="Complete" />
+              <ProgressStep label="Annotate" secondaryLabel="Mark objects" />
+              <ProgressStep label="Process" secondaryLabel="Track & detect" />
+            </ProgressIndicator>
           </div>
 
-          <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
-            <div className="lg:col-span-2 space-y-6">
-              <div className="control-panel">
-                <h2 className="text-2xl font-bold mb-4">Annotation Canvas</h2>
-                <div className="canvas-container" onClick={handleImageClick}>
-                  {frameUrl ? (
-                    <img
-                      ref={imgRef}
-                      src={frameUrl}
-                      alt="Frame"
-                      className="w-full h-auto"
-                      onError={() => {
-                        if (useThumbs) {
-                          setUseThumbs(false);
-                        }
-                      }}
-                    />
+          <Grid>
+            {/* Left column - Canvas */}
+            <Column lg={12} md={6} sm={4}>
+              <Tile style={{ padding: 0, overflow: "hidden", marginBottom: "1rem" }}>
+                <div
+                  style={{
+                    backgroundColor: "#161616",
+                    position: "relative",
+                    cursor: selectedObject ? "crosshair" : "default",
+                    minHeight: "300px",
+                  }}
+                  onClick={handleImageClick}
+                >
+                  {loading ? (
+                    <div style={{ padding: "4rem", textAlign: "center" }}>
+                      <InlineLoading description="Loading session..." />
+                    </div>
+                  ) : frameUrl ? (
+                    <>
+                      <img
+                        ref={imgRef}
+                        src={frameUrl}
+                        alt="Frame"
+                        style={{ width: "100%", height: "auto", display: "block" }}
+                        onError={() => {
+                          if (useThumbs) setUseThumbs(false);
+                        }}
+                      />
+                      {!selectedObject && (
+                        <div
+                          style={{
+                            position: "absolute",
+                            inset: 0,
+                            backgroundColor: "rgba(0,0,0,0.7)",
+                            display: "flex",
+                            alignItems: "center",
+                            justifyContent: "center",
+                          }}
+                        >
+                          <Tile style={{ maxWidth: "280px", textAlign: "center" }}>
+                            <Cursor_1 size={32} style={{ marginBottom: "0.5rem" }} />
+                            <p style={{ fontWeight: 600, marginBottom: "0.5rem" }}>Create an object first</p>
+                            <p style={{ fontSize: "0.875rem", color: "#525252" }}>
+                              Type a name in the Objects panel and click "Add Object"
+                            </p>
+                          </Tile>
+                        </div>
+                      )}
+                    </>
                   ) : (
-                    <div className="text-gray-400 p-10">No frame loaded</div>
+                    <div style={{ padding: "4rem", textAlign: "center", color: "#8d8d8d" }}>
+                      {!sessionId ? (
+                        <>
+                          <WarningAlt size={48} style={{ marginBottom: "1rem", color: "#f1c21b" }} />
+                          <p style={{ fontWeight: 600, marginBottom: "0.5rem" }}>No Active Session</p>
+                          <p style={{ fontSize: "0.875rem", marginBottom: "1rem" }}>
+                            Your session may have expired or the backend was restarted.
+                          </p>
+                          <Button kind="secondary" size="sm" as={Link} to="/config" renderIcon={ArrowLeft}>
+                            Go to Config
+                          </Button>
+                        </>
+                      ) : (
+                        <>
+                          <Image size={48} style={{ marginBottom: "1rem", opacity: 0.5 }} />
+                          <p>No frames loaded</p>
+                        </>
+                      )}
+                    </div>
                   )}
+                  {/* Point markers */}
                   {(frameObjects[selectedObject] || []).map((point) => (
                     <span
                       key={point.id || `${point.x}-${point.y}`}
-                      className={`point-marker ${point.label === 1 ? "positive" : "negative"}`}
-                      style={{ left: `${(point.fx || 0) * 100}%`, top: `${(point.fy || 0) * 100}%` }}
+                      style={{
+                        position: "absolute",
+                        left: `${(point.fx || 0) * 100}%`,
+                        top: `${(point.fy || 0) * 100}%`,
+                        width: "18px",
+                        height: "18px",
+                        borderRadius: "50%",
+                        border: "3px solid white",
+                        transform: "translate(-50%, -50%)",
+                        backgroundColor: point.label === 1 ? "#42be65" : "#da1e28",
+                        cursor: "pointer",
+                        boxShadow: "0 2px 6px rgba(0,0,0,0.4)",
+                        transition: "transform 0.15s ease",
+                      }}
                       onClick={(event) => {
                         event.stopPropagation();
                         removePoint(point.id);
                       }}
-                      title="Remove point"
+                      title="Click to remove"
                     />
                   ))}
                 </div>
-                <div className="flex items-center justify-between mt-4">
-                  <button
-                    className="btn-secondary"
+              </Tile>
+
+              {/* Frame navigation */}
+              <Tile>
+                <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: "1rem" }}>
+                  <Button
+                    kind="ghost"
+                    size="sm"
+                    renderIcon={ChevronLeft}
                     onClick={() => setCurrentIndex((prev) => Math.max(0, prev - 1))}
                     disabled={currentIndex === 0}
+                    iconDescription="Previous frame"
                   >
-                    Prev Frame
-                  </button>
-                  <span className="text-sm text-gray-500">
+                    Prev
+                  </Button>
+                  <span style={{ fontSize: "0.875rem", color: "#525252" }}>
                     Frame {frames.length ? currentIndex + 1 : 0} / {frames.length}
                   </span>
-                  <button
-                    className="btn-secondary"
+                  <Button
+                    kind="ghost"
+                    size="sm"
+                    renderIcon={ChevronRight}
                     onClick={() => setCurrentIndex((prev) => Math.min(frames.length - 1, prev + 1))}
                     disabled={currentIndex >= frames.length - 1}
+                    iconDescription="Next frame"
                   >
-                    Next Frame
-                  </button>
+                    Next
+                  </Button>
                 </div>
-                <div className="mt-4">
-                  <label className="text-sm text-gray-500 block mb-2">Jump to frame</label>
-                  <input
-                    type="range"
-                    min="0"
-                    max={Math.max(0, frames.length - 1)}
-                    value={currentIndex}
-                    onChange={(event) => setCurrentIndex(Number(event.target.value))}
-                    disabled={frames.length === 0}
-                  />
-                </div>
-              </div>
-            </div>
-
-            <div className="space-y-6 sticky-objects">
-              <div className="control-panel">
-                <h2 className="text-xl font-bold mb-4">Objects</h2>
-                <input
-                  type="text"
-                  placeholder="Object name"
-                  value={objectName}
-                  onChange={(event) => setObjectName(event.target.value)}
+                <Slider
+                  id="frame-slider"
+                  labelText="Jump to frame"
+                  min={0}
+                  max={Math.max(0, frames.length - 1)}
+                  value={currentIndex}
+                  onChange={({ value }) => setCurrentIndex(value)}
+                  disabled={frames.length === 0}
+                  hideTextInput
                 />
-                <label className="flex items-center gap-2 text-sm mt-3">
-                  <input
-                    type="checkbox"
-                    checked={markAsTarget}
-                    onChange={(event) => {
-                      setMarkAsTarget(event.target.checked);
-                      setTargetToggleTouched(true);
-                    }}
-                  />
-                  Mark selected object as target
-                </label>
-                <div className="flex gap-2 mt-3">
-                  <button className="btn-secondary" onClick={handleAddObject}>Add Object</button>
-                  <button className="btn-primary" onClick={handleSavePoints} disabled={busy}>Save Points</button>
+              </Tile>
+            </Column>
+
+            {/* Right column - Controls */}
+            <Column lg={4} md={2} sm={4}>
+              {/* Objects panel */}
+              <Tile style={{ marginBottom: "1rem" }}>
+                <h3 style={{ fontSize: "1rem", fontWeight: 600, marginBottom: "1rem", display: "flex", alignItems: "center", gap: "0.5rem" }}>
+                  <View size={16} /> Objects
+                </h3>
+                <TextInput
+                  ref={objectInputRef}
+                  id="object-name"
+                  labelText="Object name"
+                  placeholder="e.g., hand, cup, ball"
+                  value={objectName}
+                  onChange={(e) => setObjectName(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter") {
+                      e.preventDefault();
+                      handleAddObject();
+                    }
+                  }}
+                  size="sm"
+                />
+                <Checkbox
+                  id="mark-target"
+                  labelText={<span style={{ display: "flex", alignItems: "center", gap: "0.5rem" }}><FlagFilled size={14} /> Mark as target object</span>}
+                  checked={markAsTarget}
+                  onChange={(_, { checked }) => {
+                    setMarkAsTarget(checked);
+                    setTargetToggleTouched(true);
+                  }}
+                  style={{ marginTop: "0.75rem" }}
+                />
+                <div style={{ display: "flex", gap: "0.5rem", marginTop: "1rem" }}>
+                  <Button kind="secondary" size="sm" onClick={handleAddObject} renderIcon={Add}>
+                    Add
+                  </Button>
+                  <Button size="sm" onClick={handleSavePoints} disabled={busy} renderIcon={Save}>
+                    Save
+                  </Button>
                 </div>
-                <div className="mt-4 space-y-2">
-                  {objectList.length === 0 && <div className="text-sm text-gray-500">No objects yet.</div>}
-                  {objectList.map((name) => (
-                    <div
-                      key={name}
-                      className={`object-card ${selectedObject === name ? "active" : ""}`}
-                      onClick={() => {
-                        setSelectedObject(name);
-                        setPoints(frameObjects[name] || []);
-                        setMarkAsTarget(isTargetName(name));
-                        setTargetToggleTouched(false);
-                      }}
-                    >
-                      <div className="font-medium flex items-center gap-2">
-                        <span>{displayObjectName(name)}</span>
-                        {isTargetName(name) && <span className="target-pill">Target</span>}
-                      </div>
-                      <div className="text-xs text-gray-500">{(frameObjects[name] || []).length} points</div>
-                    </div>
-                  ))}
-                </div>
-                {selectedObject && (frameObjects[selectedObject] || []).length > 0 && (
-                  <div className="mt-4">
-                    <div className="text-sm font-semibold mb-2">Points</div>
-                    <div className="max-h-40 overflow-y-auto space-y-2">
-                      {(frameObjects[selectedObject] || []).map((point, idx) => (
+
+                {/* Object list */}
+                <div style={{ marginTop: "1rem" }}>
+                  {objectList.length === 0 ? (
+                    <p style={{ fontSize: "0.875rem", color: "#6f6f6f" }}>No objects yet.</p>
+                  ) : (
+                    <div style={{ display: "flex", flexDirection: "column", gap: "0.5rem" }}>
+                      {objectList.map((name) => (
                         <div
-                          key={point.id || `${point.x}-${point.y}-${idx}`}
-                          className="flex items-center justify-between text-xs text-gray-600"
+                          key={name}
+                          onClick={() => {
+                            setSelectedObject(name);
+                            setPoints(frameObjects[name] || []);
+                            setMarkAsTarget(isTargetName(name));
+                            setTargetToggleTouched(false);
+                          }}
+                          style={{
+                            padding: "0.75rem",
+                            borderRadius: "4px",
+                            border: `2px solid ${selectedObject === name ? "#0f62fe" : "#e0e0e0"}`,
+                            backgroundColor: selectedObject === name ? "#e5f6ff" : "#fff",
+                            cursor: "pointer",
+                            transition: "all 0.15s ease",
+                          }}
                         >
-                          <span>
-                            {idx + 1}. {point.label === 1 ? "pos" : "neg"} ({Math.round(point.x)}, {Math.round(point.y)})
-                          </span>
-                          <button className="btn-secondary px-2 py-1" onClick={() => removePoint(point.id)}>
-                            Remove
-                          </button>
+                          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+                            <span style={{ fontWeight: 500, display: "flex", alignItems: "center", gap: "0.5rem" }}>
+                              {displayObjectName(name)}
+                              {isTargetName(name) && <Tag type="cyan" size="sm">Target</Tag>}
+                            </span>
+                            <Tag type="gray" size="sm">{(frameObjects[name] || []).length} pts</Tag>
+                          </div>
                         </div>
                       ))}
                     </div>
-                  </div>
-                )}
-                <div className="mt-4">
-                  <button className="btn-secondary" onClick={handleTestMask} disabled={busy}>Test Mask</button>
+                  )}
                 </div>
-                <p className="text-sm text-gray-500 mt-3">{status}</p>
-                {missingSteps.length > 0 && (
-                  <div className="status-box error">
-                    <div className="font-semibold mb-1">Complete before continuing:</div>
-                    <ul className="list-disc list-inside">
-                      {missingSteps.map((step) => (
-                        <li key={step}>{step}</li>
-                      ))}
-                    </ul>
-                  </div>
-                )}
-              </div>
+              </Tile>
 
-              <div className="control-panel">
-                <h2 className="text-2xl font-bold mb-4">Point Controls</h2>
-                <div className="grid grid-cols-2 gap-4">
-                  <button className="btn-primary" onClick={() => setLabelMode(1)}>
-                    <i className="fas fa-plus mr-2"></i>Positive Points
-                  </button>
-                  <button className="btn-secondary" onClick={() => setLabelMode(0)}>
-                    <i className="fas fa-minus mr-2"></i>Negative Points
-                  </button>
+              {/* Point mode */}
+              <Tile style={{ marginBottom: "1rem" }}>
+                <h3 style={{ fontSize: "1rem", fontWeight: 600, marginBottom: "1rem", display: "flex", alignItems: "center", gap: "0.5rem" }}>
+                  <CircleFilled size={16} /> Point Mode
+                </h3>
+                <div style={{ display: "flex", gap: "0.5rem" }}>
+                  <Button
+                    kind={labelMode === 1 ? "primary" : "secondary"}
+                    size="sm"
+                    onClick={() => setLabelMode(1)}
+                    renderIcon={AddAlt}
+                    style={{ flex: 1 }}
+                  >
+                    Positive
+                  </Button>
+                  <Button
+                    kind={labelMode === 0 ? "danger" : "secondary"}
+                    size="sm"
+                    onClick={() => setLabelMode(0)}
+                    renderIcon={SubtractAlt}
+                    style={{ flex: 1 }}
+                  >
+                    Negative
+                  </Button>
                 </div>
-                <div className="mt-4">
-                  <button
-                    className="btn-secondary w-full"
+                <p style={{ fontSize: "0.75rem", color: "#525252", marginTop: "0.5rem" }}>
+                  {labelMode === 1 ? "Click to mark object regions (green)" : "Click to exclude regions (red)"}
+                </p>
+                <div style={{ display: "flex", gap: "0.5rem", marginTop: "1rem" }}>
+                  <Button
+                    kind="ghost"
+                    size="sm"
                     onClick={undoLastPoint}
                     disabled={!selectedObject || (frameObjects[selectedObject] || []).length === 0}
+                    renderIcon={Undo}
+                    style={{ flex: 1 }}
                   >
-                    Undo last point
-                  </button>
+                    Undo
+                  </Button>
+                  <Button
+                    kind="tertiary"
+                    size="sm"
+                    onClick={handleTestMask}
+                    disabled={busy}
+                    renderIcon={ZoomIn}
+                    style={{ flex: 1 }}
+                  >
+                    Test Mask
+                  </Button>
                 </div>
-                <div className="flex items-center gap-4 mt-4">
-                  <div className="keyboard-hint"><span className="key">C</span> Name Object</div>
-                  <div className="keyboard-hint"><span className="key">T</span> Test Mask</div>
-                  <div className="keyboard-hint"><span className="key">Enter</span> Confirm</div>
+              </Tile>
+
+              {/* Keyboard shortcuts */}
+              <Tile style={{ marginBottom: "1rem" }}>
+                <h3 style={{ fontSize: "0.875rem", fontWeight: 600, marginBottom: "0.75rem", display: "flex", alignItems: "center", gap: "0.5rem" }}>
+                  <Keyboard size={16} /> Shortcuts
+                </h3>
+                <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "0.25rem", fontSize: "0.75rem" }}>
+                  <div><Tag type="gray" size="sm">C</Tag> Focus name</div>
+                  <div><Tag type="gray" size="sm">T</Tag> Test mask</div>
+                  <div><Tag type="gray" size="sm">Enter</Tag> Save</div>
+                  <div><Tag type="gray" size="sm">Ctrl+Z</Tag> Undo</div>
+                  <div><Tag type="gray" size="sm">1</Tag> Positive</div>
+                  <div><Tag type="gray" size="sm">2</Tag> Negative</div>
+                  <div><Tag type="gray" size="sm">←→</Tag> Frames</div>
                 </div>
-              </div>
-            </div>
-          </div>
+              </Tile>
+
+              {/* Status */}
+              {status && (
+                <InlineNotification
+                  kind={statusKind}
+                  title={status}
+                  lowContrast
+                  hideCloseButton
+                  style={{ marginBottom: "1rem" }}
+                />
+              )}
+
+              {/* Missing steps warning */}
+              {missingSteps.length > 0 && (
+                <InlineNotification
+                  kind="warning"
+                  title="Complete before continuing"
+                  lowContrast
+                  hideCloseButton
+                >
+                  <ul style={{ margin: "0.5rem 0 0 1rem", padding: 0 }}>
+                    {missingSteps.map((step) => (
+                      <li key={step} style={{ fontSize: "0.875rem" }}>{step}</li>
+                    ))}
+                  </ul>
+                </InlineNotification>
+              )}
+            </Column>
+          </Grid>
         </div>
       </main>
 
-      {showPreview && (
-        <div className="modal-backdrop" onClick={() => setShowPreview(false)}>
-          <div className="modal-card" onClick={(event) => event.stopPropagation()}>
-            <div className="modal-header">
-              <h3 className="text-lg font-semibold">Mask Preview</h3>
-              <button className="modal-close" onClick={() => setShowPreview(false)}>Close</button>
-            </div>
-            <div className="modal-body">
-              {maskPreviewUrl ? (
-                <img src={maskPreviewUrl} alt="Mask preview" />
-              ) : (
-                <div className="text-gray-400">No preview available</div>
-              )}
-            </div>
-          </div>
+      {/* Mask preview modal */}
+      <Modal
+        open={showPreview}
+        onRequestClose={() => setShowPreview(false)}
+        modalHeading="Mask Preview"
+        passiveModal
+        size="lg"
+      >
+        <div style={{ backgroundColor: "#000", borderRadius: "4px", padding: "1rem", display: "flex", justifyContent: "center" }}>
+          {maskPreviewUrl ? (
+            <img src={maskPreviewUrl} alt="Mask preview" style={{ maxWidth: "100%", maxHeight: "60vh", objectFit: "contain" }} />
+          ) : (
+            <p style={{ color: "#6f6f6f" }}>No preview available</p>
+          )}
         </div>
-      )}
+      </Modal>
     </div>
   );
 }

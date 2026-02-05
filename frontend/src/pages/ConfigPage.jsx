@@ -8,7 +8,59 @@ import {
   fetchModels,
   listFrames,
   createSampleClip,
+  detectGreyStart,
 } from "../api.js";
+import {
+  Button,
+  Grid,
+  Column,
+  Tile,
+  TextInput,
+  NumberInput,
+  Select,
+  SelectItem,
+  Checkbox,
+  Toggle,
+  Slider,
+  Accordion,
+  AccordionItem,
+  InlineNotification,
+  ProgressIndicator,
+  ProgressStep,
+  FileUploaderDropContainer,
+  Tag,
+  Link as CarbonLink,
+  InlineLoading,
+} from "@carbon/react";
+import {
+  ArrowLeft,
+  ArrowRight,
+  Upload,
+  Checkmark,
+  Video,
+  Settings,
+  Play,
+  Document,
+  Home,
+  Cut,
+  Timer,
+  Meter,
+  MachineLearning,
+  SettingsAdjust,
+  Export,
+  DocumentExport,
+  Time,
+  Crop,
+  Rocket,
+  Folder,
+  VideoFilled,
+  Number_1,
+  Number_2,
+  Number_3,
+  CheckmarkFilled,
+  ChartMultitype,
+  Filter,
+} from "@carbon/icons-react";
 
 export default function ConfigPage() {
   const [sessionId, setSessionId] = useState("");
@@ -28,6 +80,9 @@ export default function ConfigPage() {
   const [processStartFrame, setProcessStartFrame] = useState("");
   const [processEndFrame, setProcessEndFrame] = useState("");
   const [sampleDuration, setSampleDuration] = useState("10");
+  const [trimStart, setTrimStart] = useState("");
+  const [trimEnd, setTrimEnd] = useState("");
+  const videoRef = useRef(null);
   const [compressMode, setCompressMode] = useState("auto");
   const [useMps, setUseMps] = useState(false);
   const [exportVideo, setExportVideo] = useState(true);
@@ -41,7 +96,6 @@ export default function ConfigPage() {
   const [roiMinSize, setRoiMinSize] = useState(256);
   const [roiMaxCoverage, setRoiMaxCoverage] = useState(0.95);
   const [speedPreset, setSpeedPreset] = useState("slow");
-  const [showAdvanced, setShowAdvanced] = useState(false);
   const [modelKey, setModelKey] = useState("auto");
   const [models, setModels] = useState([
     { key: "auto", label: "Auto (largest available)", available: true },
@@ -50,788 +104,673 @@ export default function ConfigPage() {
   const [frameCount, setFrameCount] = useState(0);
   const [videoUploaded, setVideoUploaded] = useState(false);
   const [status, setStatus] = useState("Ready to start.");
+  const [statusType, setStatusType] = useState("info");
   const [busy, setBusy] = useState(false);
+  const [sessionStale, setSessionStale] = useState(false);
   const inputRef = useRef(null);
   const navigate = useNavigate();
 
-  useEffect(() => {
-    const stored = localStorage.getItem("eoa_session");
-    if (stored) {
-      setSessionId(stored);
-      setStatus("Loaded existing session. Upload a video or update config.");
-    }
-  }, []);
-
+  // Speed presets effect
   useEffect(() => {
     if (speedPreset === "custom") return;
     const presets = {
-      slow: {
-        frameStride: 1,
-        frameInterpolation: "nearest",
-        roiEnabled: false,
-        roiMargin: 0.15,
-        roiMinSize: 256,
-        roiMaxCoverage: 0.95,
-      },
-      medium: {
-        frameStride: 2,
-        frameInterpolation: "nearest",
-        roiEnabled: true,
-        roiMargin: 0.15,
-        roiMinSize: 256,
-        roiMaxCoverage: 0.95,
-      },
-      fast: {
-        frameStride: 4,
-        frameInterpolation: "nearest",
-        roiEnabled: true,
-        roiMargin: 0.15,
-        roiMinSize: 256,
-        roiMaxCoverage: 0.95,
-      },
-      ultra: {
-        frameStride: 6,
-        frameInterpolation: "nearest",
-        roiEnabled: true,
-        roiMargin: 0.15,
-        roiMinSize: 256,
-        roiMaxCoverage: 0.95,
-      },
+      slow: { frameStride: 1, roiEnabled: false },
+      medium: { frameStride: 2, roiEnabled: true },
+      fast: { frameStride: 4, roiEnabled: true },
+      ultra: { frameStride: 6, roiEnabled: true },
     };
     const preset = presets[speedPreset];
     if (!preset) return;
     setFrameStride(preset.frameStride);
-    setFrameInterpolation(preset.frameInterpolation);
     setRoiEnabled(preset.roiEnabled);
-    setRoiMargin(preset.roiMargin);
-    setRoiMinSize(preset.roiMinSize);
-    setRoiMaxCoverage(preset.roiMaxCoverage);
   }, [speedPreset]);
 
+  // Session validation on mount
+  useEffect(() => {
+    const stored = localStorage.getItem("eoa_session");
+    if (stored) {
+      fetch(`${import.meta.env.VITE_API_BASE || "http://localhost:8000"}/sessions/${stored}`)
+        .then((res) => {
+          if (res.ok) {
+            return res.json().then((sessionData) => {
+              setSessionId(stored);
+              if (sessionData.video_path) {
+                setVideoUploaded(true);
+                setStatus("Session restored. Checking frames...");
+              }
+            });
+          } else {
+            localStorage.removeItem("eoa_session");
+            setSessionStale(true);
+            setStatus("Previous session expired. Upload a video to start fresh.");
+            setStatusType("warning");
+          }
+        })
+        .catch(() => {
+          localStorage.removeItem("eoa_session");
+          setSessionStale(true);
+          setStatus("Cannot connect to backend. Make sure the server is running.");
+          setStatusType("error");
+        });
+    }
+  }, []);
+
+  // Check frames when session changes
   useEffect(() => {
     if (!sessionId) {
       setFramesReady(false);
       setFrameCount(0);
       return;
     }
-    let mounted = true;
     listFrames(sessionId)
       .then((data) => {
-        if (!mounted) return;
         const count = data.frame_count || 0;
         setFrameCount(count);
         setFramesReady(count > 0);
         if (count > 0) {
-          setStatus("Frames detected. Save configuration to continue.");
+          setStatus(`${count} frames detected. Ready to continue.`);
+          setStatusType("success");
         }
       })
       .catch(() => {
-        if (!mounted) return;
         setFramesReady(false);
         setFrameCount(0);
       });
-    return () => {
-      mounted = false;
-    };
   }, [sessionId]);
 
+  // Fetch models
   useEffect(() => {
-    let mounted = true;
     fetchModels()
       .then((data) => {
-        if (!mounted) return;
         const apiModels = data.models || [];
         setModels([
           { key: "auto", label: "Auto (largest available)", available: true },
           ...apiModels,
         ]);
       })
-      .catch(() => {
-        if (!mounted) return;
-      });
-    return () => {
-      mounted = false;
-    };
+      .catch(() => {});
   }, []);
 
-  async function handleUpload() {
-    if (!videoFile) {
-      setStatus("Select a video file.");
-      return;
-    }
+  async function handleFileUpload(files) {
+    const file = files[0];
+    if (!file) return;
+    setVideoFile(file);
     try {
       setBusy(true);
-      setStatus("Creating new session...");
+      setStatus("Creating session...");
+      setStatusType("info");
       const session = await createSession("web-session");
-      const activeSessionId = session.id;
-      setSessionId(activeSessionId);
-      localStorage.setItem("eoa_session", activeSessionId);
+      setSessionId(session.id);
+      localStorage.setItem("eoa_session", session.id);
       setVideoUploaded(false);
       setFramesReady(false);
       setFrameCount(0);
       setStatus("Uploading video...");
-      await uploadVideo(activeSessionId, videoFile);
+      await uploadVideo(session.id, file);
       setVideoUploaded(true);
-      setFramesReady(false);
-      setFrameCount(0);
-      setStatus("Video uploaded. Choose full extraction or create a sample clip.");
+      setSessionStale(false);
+      setStatus("Video uploaded. Extract frames to continue.");
+      setStatusType("success");
     } catch (err) {
       setStatus(err.message);
+      setStatusType("error");
     } finally {
       setBusy(false);
     }
   }
 
   async function handleExtractFrames() {
-    if (!sessionId) {
-      setStatus("Create a session first.");
-      return;
-    }
-    if (!videoUploaded) {
-      setStatus("Upload a video first.");
-      return;
-    }
+    if (!sessionId || !videoUploaded) return;
     try {
       setBusy(true);
-      setStatus("Extracting frames...");
-      await extractFrames(sessionId);
-      try {
-        const data = await listFrames(sessionId);
-        const count = data.frame_count || 0;
-        setFrameCount(count);
-        setFramesReady(count > 0);
-      } catch (err) {
-        setFramesReady(true);
-      }
-      setStatus("Frames ready. Save configuration to continue.");
+      const trimInfo = trimStart || trimEnd ? ` (${trimStart || "0"}s - ${trimEnd || "end"})` : "";
+      setStatus(`Extracting frames${trimInfo}...`);
+      setStatusType("info");
+      await extractFrames(sessionId, 2, trimStart || null, trimEnd || null);
+      const data = await listFrames(sessionId);
+      const count = data.frame_count || 0;
+      setFrameCount(count);
+      setFramesReady(count > 0);
+      setStatus(`${count} frames extracted. Ready to continue.`);
+      setStatusType("success");
     } catch (err) {
       setStatus(err.message);
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  async function handleCreateSampleClip() {
-    if (!sessionId) {
-      setStatus("Create a session first.");
-      return;
-    }
-    if (!videoUploaded) {
-      setStatus("Upload a video first.");
-      return;
-    }
-    try {
-      setBusy(true);
-      setStatus("Creating sample clip...");
-      await createSampleClip(sessionId, Number(sampleDuration) || 10);
-      setStatus("Extracting frames from sample...");
-      await extractFrames(sessionId);
-      try {
-        const data = await listFrames(sessionId);
-        const count = data.frame_count || 0;
-        setFrameCount(count);
-        setFramesReady(count > 0);
-      } catch (err) {
-        setFramesReady(true);
-      }
-      setStatus("Sample clip ready. Save configuration to continue.");
-    } catch (err) {
-      setStatus(err.message);
+      setStatusType("error");
     } finally {
       setBusy(false);
     }
   }
 
   async function handleSaveConfig() {
-    if (!sessionId) {
-      setStatus("Create a session first.");
-      return;
-    }
-    if (!framesReady) {
-      setStatus("Upload a video and extract frames before continuing.");
-      return;
-    }
+    if (!sessionId || !framesReady) return;
     try {
       setBusy(true);
       setStatus("Saving configuration...");
-      const toOptionalNumber = (value) => {
-        if (value === "" || value === null || value === undefined) return null;
-        const num = Number(value);
-        return Number.isFinite(num) ? num : null;
-      };
-      const toOptionalInt = (value) => {
-        if (value === "" || value === null || value === undefined) return null;
-        const num = parseInt(value, 10);
-        return Number.isFinite(num) ? num : null;
-      };
-      const compressMasksValue = compressMode === "auto" ? null : compressMode === "on";
-      const tuningTargetValue = toOptionalNumber(tuningTarget);
-      const tuningReserveValue = toOptionalNumber(tuningReserveGb);
-      const roiMarginValue = toOptionalNumber(roiMargin);
-      const roiMinSizeValue = toOptionalInt(roiMinSize);
-      const roiMaxCoverageValue = toOptionalNumber(roiMaxCoverage);
+      setStatusType("info");
+      const toNum = (v) => (v === "" ? null : Number(v) || null);
+      const toInt = (v) => (v === "" ? null : parseInt(v, 10) || null);
       await updateConfig({
         session_id: sessionId,
         overlap_threshold: Number(threshold) / 100,
         batch_size: Number(batchSize),
         auto_fallback: autoFallback,
         auto_tune: autoTune,
-        tuning_target: tuningTargetValue === null ? 0.75 : tuningTargetValue,
-        tuning_reserve_gb: tuningReserveValue === null ? 8.0 : tuningReserveValue,
-        preview_stride: toOptionalInt(previewStride),
-        max_cache_frames: toOptionalInt(maxCacheFrames),
-        max_cache_cap: toOptionalInt(maxCacheCap),
+        tuning_target: toNum(tuningTarget) || 0.75,
+        tuning_reserve_gb: toNum(tuningReserveGb) || 8.0,
+        preview_stride: toInt(previewStride),
+        max_cache_frames: toInt(maxCacheFrames),
         use_mps: useMps,
         model_key: modelKey,
         export_video: exportVideo,
         export_elan: exportElan,
         export_csv: exportCsv,
         output_dir: outputDir || null,
-        chunk_size: toOptionalInt(chunkSize),
-        chunk_seconds: toOptionalNumber(chunkSeconds),
-        chunk_overlap: toOptionalInt(chunkOverlap) || 1,
-        compress_masks: compressMasksValue,
-        frame_stride: Number(frameStride) > 1 ? Number(frameStride) : null,
-        frame_interpolation: Number(frameStride) > 1 ? frameInterpolation : null,
+        chunk_size: toInt(chunkSize),
+        chunk_seconds: toNum(chunkSeconds),
+        chunk_overlap: toInt(chunkOverlap) || 1,
+        compress_masks: compressMode === "auto" ? null : compressMode === "on",
+        frame_stride: frameStride > 1 ? frameStride : null,
+        frame_interpolation: frameStride > 1 ? frameInterpolation : null,
         roi_enabled: roiEnabled,
-        roi_margin: roiMarginValue === null ? 0.15 : roiMarginValue,
-        roi_min_size: roiMinSizeValue === null ? 256 : roiMinSizeValue,
-        roi_max_coverage: roiMaxCoverageValue === null ? 0.95 : roiMaxCoverageValue,
-        process_start_frame: toOptionalInt(processStartFrame),
-        process_end_frame: toOptionalInt(processEndFrame),
+        roi_margin: roiMargin,
+        roi_min_size: roiMinSize,
+        roi_max_coverage: roiMaxCoverage,
+        process_start_frame: toInt(processStartFrame),
+        process_end_frame: toInt(processEndFrame),
       });
-      setStatus("Configuration saved. Proceed to annotation.");
+      setStatus("Configuration saved!");
+      setStatusType("success");
       navigate("/annotation");
     } catch (err) {
       setStatus(err.message);
+      setStatusType("error");
     } finally {
       setBusy(false);
     }
   }
 
-  const missingSteps = [];
-  if (!sessionId) missingSteps.push("Create a session.");
-  if (!framesReady) missingSteps.push("Upload a video and extract frames.");
+  const currentStep = framesReady ? 2 : videoUploaded ? 1 : 0;
 
   return (
-    <div className="bg-white text-black">
-      <style>{`
-        body { font-family: 'Inter', sans-serif; }
-        .control-panel { background: white; border: 2px solid #e5e7eb; border-radius: 12px; padding: 24px; transition: all 0.3s ease; }
-        .control-panel:hover { border-color: #d1d5db; }
-        .btn-primary { background: black; color: white; padding: 12px 24px; border-radius: 8px; font-weight: 600; transition: all 0.3s ease; border: none; cursor: pointer; }
-        .btn-primary:hover:not(:disabled) { background: #374151; transform: translateY(-2px); box-shadow: 0 4px 12px rgba(0,0,0,0.2); }
-        .btn-primary:disabled { background: #d1d5db; cursor: not-allowed; transform: none; }
-        .btn-secondary { background: white; color: black; border: 2px solid black; padding: 12px 24px; border-radius: 8px; font-weight: 600; transition: all 0.3s ease; cursor: pointer; }
-        .btn-secondary:hover:not(:disabled) { background: black; color: white; }
-        .upload-zone { border: 3px dashed #d1d5db; border-radius: 12px; padding: 60px; text-align: center; cursor: pointer; transition: all 0.3s ease; background: white; }
-        .upload-zone:hover { border-color: black; background: #f9fafb; }
-        .dropdown { background: white; border: 2px solid #e5e7eb; color: black; padding: 10px 16px; border-radius: 8px; width: 100%; cursor: pointer; transition: all 0.3s ease; }
-        .dropdown:focus { outline: none; border-color: black; }
-        input[type="range"] { -webkit-appearance: none; appearance: none; width: 100%; height: 8px; border-radius: 4px; background: #e5e7eb; outline: none; }
-        input[type="range"]::-webkit-slider-thumb { -webkit-appearance: none; appearance: none; width: 20px; height: 20px; border-radius: 50%; background: black; cursor: pointer; }
-        input[type="range"]::-moz-range-thumb { width: 20px; height: 20px; border-radius: 50%; background: black; cursor: pointer; border: none; }
-        input[type="checkbox"] { accent-color: black; }
-        input[type="text"] { border: 2px solid #e5e7eb; border-radius: 8px; padding: 10px 16px; width: 100%; transition: all 0.3s ease; }
-        input[type="text"]:focus { outline: none; border-color: black; }
-        .info-pill { display: inline-flex; align-items: center; justify-content: center; width: 16px; height: 16px; border-radius: 999px; border: 1px solid #9ca3af; font-size: 10px; color: #6b7280; margin-left: 6px; position: relative; cursor: help; }
-        .info-pill::after { content: attr(data-tooltip); position: absolute; left: 50%; bottom: 140%; transform: translateX(-50%); background: #111827; color: white; font-size: 11px; padding: 6px 8px; border-radius: 6px; white-space: normal; text-align: center; min-width: 140px; max-width: 220px; opacity: 0; pointer-events: none; z-index: 20; box-shadow: 0 6px 16px rgba(0, 0, 0, 0.2); transition: opacity 0.2s ease, transform 0.2s ease; }
-        .info-pill::before { content: ""; position: absolute; left: 50%; bottom: 120%; transform: translateX(-50%); border: 6px solid transparent; border-top-color: #111827; opacity: 0; transition: opacity 0.2s ease; }
-        .info-pill:hover::after,
-        .info-pill:focus::after { opacity: 1; transform: translateX(-50%) translateY(-2px); }
-        .info-pill:hover::before,
-        .info-pill:focus::before { opacity: 1; }
-        .warning-note { display: inline-flex; align-items: center; gap: 8px; font-size: 12px; color: #b45309; margin-top: 8px; }
-        .warning-icon { display: inline-flex; align-items: center; justify-content: center; width: 16px; height: 16px; border-radius: 999px; border: 1px solid #f59e0b; color: #b45309; font-weight: 700; font-size: 11px; }
-        .toggle-link { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; color: #374151; cursor: pointer; }
-        .toggle-link:hover { color: #111827; }
-        .video-preview { background: #000; border: 2px solid #e5e7eb; border-radius: 12px; aspect-ratio: 16/9; display: flex; align-items: center; justify-content: center; position: relative; overflow: hidden; }
-        video { width: 100%; height: 100%; object-fit: contain; }
-        .stat-card { background: white; border: 2px solid #e5e7eb; border-radius: 8px; padding: 12px; text-align: center; }
-        .progress-steps { display: flex; align-items: center; justify-content: center; gap: 8px; margin-bottom: 32px; }
-        .step { display: flex; align-items: center; gap: 8px; }
-        .step-circle { width: 32px; height: 32px; border-radius: 50%; border: 2px solid #e5e7eb; display: flex; align-items: center; justify-content: center; font-weight: 600; font-size: 14px; }
-        .step-circle.active { background: black; color: white; border-color: black; }
-        .step-circle.completed { background: #d1d5db; color: white; border-color: #d1d5db; }
-        .step-line { width: 40px; height: 2px; background: #e5e7eb; }
-        .status-box { border-radius: 8px; padding: 10px 12px; font-size: 13px; margin-top: 12px; }
-        .status-box.error { background: #fee2e2; border: 1px solid #fecaca; color: #991b1b; }
-      `}</style>
-
-      <header className="bg-white border-b-2 border-black fixed w-full z-50">
-        <nav className="container mx-auto px-6 py-4 flex justify-between items-center">
-          <div className="text-xl font-semibold flex items-center">
-            <i className="fas fa-eye mr-3"></i>
-            EnvisionObjectAnnotator
-          </div>
-          <div className="flex space-x-4">
-            <Link className="btn-secondary" to="/" aria-label="Go back">
-              <i className="fas fa-arrow-left mr-2"></i>Back
-            </Link>
-            <button className="btn-primary" onClick={handleSaveConfig} disabled={busy || missingSteps.length > 0} aria-label="Proceed to annotation">
-              Next Step<i className="fas fa-arrow-right ml-2"></i>
-            </button>
-          </div>
-        </nav>
+    <div className="app-shell">
+      {/* Header */}
+      <header
+        style={{
+          borderBottom: "1px solid #e0e0e0",
+          padding: "0 1rem",
+          height: "48px",
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "space-between",
+          backgroundColor: "#fff",
+          position: "sticky",
+          top: 0,
+          zIndex: 100,
+        }}
+      >
+        <div style={{ display: "flex", alignItems: "center", gap: "0.75rem" }}>
+          <Settings size={20} />
+          <span style={{ fontWeight: 600 }}>Configuration</span>
+        </div>
+        <div style={{ display: "flex", gap: "0.5rem" }}>
+          <Button kind="secondary" size="sm" renderIcon={ArrowLeft} as={Link} to="/">
+            Back
+          </Button>
+          <Button
+            size="sm"
+            renderIcon={ArrowRight}
+            onClick={handleSaveConfig}
+            disabled={busy || !framesReady}
+          >
+            Next Step
+          </Button>
+        </div>
       </header>
 
-      <main className="pt-24 pb-16">
-        <div className="container mx-auto px-6">
-          <div className="progress-steps">
-            <div className="step">
-              <div className="step-circle completed">1</div>
-              <span className="text-sm font-medium text-gray-600">Setup</span>
-            </div>
-            <div className="step-line"></div>
-            <div className="step">
-              <div className="step-circle active">2</div>
-              <span className="text-sm font-medium">Configuration</span>
-            </div>
-            <div className="step-line"></div>
-            <div className="step">
-              <div className="step-circle">3</div>
-              <span className="text-sm font-medium text-gray-600">Annotation</span>
-            </div>
+      {/* Main content */}
+      <main className="app-content">
+        <div className="page-container">
+          {/* Progress indicator */}
+          <div style={{ marginBottom: "2rem" }}>
+            <ProgressIndicator currentIndex={currentStep} spaceEqually>
+              <ProgressStep label="Upload" secondaryLabel="Select video" />
+              <ProgressStep label="Extract" secondaryLabel="Process frames" />
+              <ProgressStep label="Configure" secondaryLabel="Set options" />
+            </ProgressIndicator>
           </div>
 
-          <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
-            <div className="lg:col-span-2 space-y-6">
-              <div className="control-panel">
-                <h2 className="text-2xl font-bold mb-4">Upload Your Video</h2>
-                <div
-                  className="upload-zone"
-                  onClick={() => inputRef.current?.click()}
-                >
-                  <input
-                    ref={inputRef}
-                    type="file"
-                    accept="video/*"
-                    className="hidden"
-                    onChange={(event) => setVideoFile(event.target.files?.[0] || null)}
-                  />
-                  <i className="fas fa-cloud-upload-alt text-4xl mb-4"></i>
-                  <p className="text-lg font-medium">Drop your video here or click to upload</p>
-                  <p className="text-sm text-gray-500 mt-2">Supports MP4, MOV, AVI files</p>
-                </div>
-                <div className="mt-4 flex items-center justify-between">
-                  <div className="text-sm text-gray-600">
-                    Session: {sessionId || "Creating on upload"}
-                  </div>
-                  <button className="btn-primary" onClick={handleUpload} disabled={busy}>
-                    Upload Video
-                  </button>
-                </div>
-                <div className="mt-6 border-t pt-4 space-y-3">
-                  <div className="grid grid-cols-2 gap-3">
-                    <button className="btn-secondary" onClick={handleExtractFrames} disabled={busy || !videoUploaded}>
-                      Extract Full Frames
-                    </button>
-                    <div className="text-xs text-gray-500 flex items-center">
-                      Uses the original upload and overwrites existing frames.
-                    </div>
-                  </div>
-                  <div>
-                    <label className="block text-sm font-medium mb-2">Sample Clip Length (seconds)</label>
-                    <input
-                      type="text"
-                      value={sampleDuration}
-                      onChange={(event) => setSampleDuration(event.target.value)}
-                    />
-                  </div>
-                  <button
-                    className="btn-secondary w-full"
-                    onClick={handleCreateSampleClip}
-                    disabled={busy || !videoUploaded}
-                  >
-                    Create Sample Clip
-                  </button>
-                  <p className="text-xs text-gray-500">
-                    Creates a short clip from your upload and re-extracts frames for quick testing.
-                  </p>
-                </div>
-                <p className="text-sm text-gray-500 mt-2">Session ID: {sessionId || "pending"}</p>
-              </div>
-
-              <div className="control-panel">
-                <h2 className="text-2xl font-bold mb-4">Detection Settings</h2>
-                <div className="mb-4">
-                  <label className="block text-sm font-medium mb-2">Model Selection</label>
-                  <select
-                    className="dropdown"
-                    value={modelKey}
-                    onChange={(event) => setModelKey(event.target.value)}
-                  >
-                    {models.map((model) => (
-                      <option key={model.key} value={model.key} disabled={!model.available}>
-                        {model.label}{model.available ? "" : " (missing checkpoint)"}
-                      </option>
-                    ))}
-                  </select>
-                  <p className="text-xs text-gray-500 mt-2">
-                    Auto selects the largest available checkpoint in your backend.
-                  </p>
-                </div>
-                <label className="block text-sm font-medium mb-2">Overlap Threshold ({threshold}%)</label>
-                <input
-                  type="range"
-                  min="1"
-                  max="50"
-                  value={threshold}
-                  onChange={(event) => setThreshold(event.target.value)}
-                />
-                <div className="mt-4">
-                  <label className="block text-sm font-medium mb-2">Batch Size</label>
-                  <input
-                    type="text"
-                    value={batchSize}
-                    onChange={(event) => setBatchSize(event.target.value)}
-                  />
-                </div>
-                <div className="mt-4 space-y-2">
-                  <label className="flex items-center gap-2 text-sm">
-                    <input
-                      type="checkbox"
-                      checked={autoFallback}
-                      onChange={(event) => setAutoFallback(event.target.checked)}
-                    />
-                    Auto fallback to CPU if GPU memory is exhausted
-                  </label>
-                  <label className="flex items-center gap-2 text-sm">
-                    <input
-                      type="checkbox"
-                      checked={autoTune}
-                      onChange={(event) => setAutoTune(event.target.checked)}
-                    />
-                    Auto tune processing based on memory headroom
-                  </label>
-                  <label className="flex items-center gap-2 text-sm">
-                    <input
-                      type="checkbox"
-                      checked={useMps}
-                      onChange={(event) => setUseMps(event.target.checked)}
-                    />
-                    Use MPS acceleration (experimental)
-                  </label>
-                </div>
-              </div>
-
-              <div className="control-panel">
-                <h2 className="text-2xl font-bold mb-4">Speed Controls</h2>
-                <div className="space-y-4">
-                  <div>
-                    <label className="block text-sm font-medium mb-2">Performance Preset</label>
-                    <select
-                      className="dropdown"
-                      value={speedPreset}
-                      onChange={(event) => setSpeedPreset(event.target.value)}
-                    >
-                      <option value="slow">Slow</option>
-                      <option value="medium">Medium</option>
-                      <option value="fast">Fast</option>
-                      <option value="ultra">Ultra</option>
-                      <option value="custom">Custom</option>
-                    </select>
-                    <div className="warning-note">
-                      <span className="warning-icon">!</span>
-                      Changing this will give considerably worse results.
-                    </div>
-                  </div>
-                  <button
-                    type="button"
-                    className="toggle-link"
-                    onClick={() => setShowAdvanced((prev) => !prev)}
-                  >
-                    {showAdvanced ? "Hide" : "Customize"}
-                    <span>{showAdvanced ? "▲" : "▼"}</span>
-                  </button>
-                  {showAdvanced && (
-                    <div className="space-y-4">
-                      <div>
-                        <label className="block text-sm font-medium mb-2">
-                          Frame Stride (skip frames)
-                          <span className="info-pill" data-tooltip="Processes every Nth frame. Higher = faster, less temporal detail." aria-label="Processes every Nth frame. Higher equals faster with less temporal detail." tabIndex={0}>i</span>
-                        </label>
-                        <input
-                          type="text"
-                          value={frameStride}
-                          onChange={(event) => {
-                            setFrameStride(event.target.value);
-                            setSpeedPreset("custom");
-                          }}
-                        />
-                        <p className="text-xs text-gray-500 mt-2">
-                          Use 1 to process every frame. 2–4 gives big speedups.
-                        </p>
-                      </div>
-                      <div>
-                        <label className="block text-sm font-medium mb-2">
-                          Interpolation
-                          <span className="info-pill" data-tooltip="Fills skipped frames by copying or blending masks." aria-label="Fills skipped frames by copying or blending masks." tabIndex={0}>i</span>
-                        </label>
-                        <select
-                          className="dropdown"
-                          value={frameInterpolation}
-                          onChange={(event) => {
-                            setFrameInterpolation(event.target.value);
-                            setSpeedPreset("custom");
-                          }}
-                          disabled={Number(frameStride) <= 1}
-                        >
-                          <option value="nearest">Nearest (fastest)</option>
-                          <option value="linear">Linear (smoother)</option>
-                        </select>
-                      </div>
-                      <div className="border-t pt-4">
-                        <label className="flex items-center gap-2 text-sm">
-                          <input
-                            type="checkbox"
-                            checked={roiEnabled}
-                            onChange={(event) => {
-                              setRoiEnabled(event.target.checked);
-                              setSpeedPreset("custom");
-                            }}
-                          />
-                          ROI crop around annotated points
-                          <span className="info-pill" data-tooltip="Crops frames to a box around your clicks. Faster, but static." aria-label="Crops frames to a box around your clicks. Faster, but static." tabIndex={0}>i</span>
-                        </label>
-                        <div className="grid grid-cols-2 gap-3 mt-3">
-                          <div>
-                            <label className="block text-sm font-medium mb-2">ROI Margin (0–1)</label>
-                            <input
-                              type="text"
-                              value={roiMargin}
-                              onChange={(event) => {
-                                setRoiMargin(event.target.value);
-                                setSpeedPreset("custom");
-                              }}
-                              disabled={!roiEnabled}
-                            />
-                          </div>
-                          <div>
-                            <label className="block text-sm font-medium mb-2">ROI Min Size (px)</label>
-                            <input
-                              type="text"
-                              value={roiMinSize}
-                              onChange={(event) => {
-                                setRoiMinSize(event.target.value);
-                                setSpeedPreset("custom");
-                              }}
-                              disabled={!roiEnabled}
-                            />
-                          </div>
-                          <div>
-                            <label className="block text-sm font-medium mb-2">ROI Max Coverage (0–1)</label>
-                            <input
-                              type="text"
-                              value={roiMaxCoverage}
-                              onChange={(event) => {
-                                setRoiMaxCoverage(event.target.value);
-                                setSpeedPreset("custom");
-                              }}
-                              disabled={!roiEnabled}
-                            />
-                          </div>
-                        </div>
-                      </div>
-                    </div>
-                  )}
-                </div>
-              </div>
-
-              <div className="control-panel">
-                <h2 className="text-2xl font-bold mb-4">Advanced Processing</h2>
-                <button
-                  type="button"
-                  className="toggle-link mb-3"
-                  onClick={() => setShowAdvanced((prev) => !prev)}
-                >
-                  {showAdvanced ? "Hide" : "Customize"}
-                  <span>{showAdvanced ? "▲" : "▼"}</span>
-                </button>
-                {showAdvanced && (
-                  <>
-                    <div className="grid grid-cols-2 gap-3">
-                  <div>
-                    <label className="block text-sm font-medium mb-2">Tune Target (0–1)</label>
-                    <input
-                      type="text"
-                      value={tuningTarget}
-                      onChange={(event) => setTuningTarget(event.target.value)}
-                      disabled={!autoTune}
-                    />
-                  </div>
-                  <div>
-                    <label className="block text-sm font-medium mb-2">Reserve RAM (GB)</label>
-                    <input
-                      type="text"
-                      value={tuningReserveGb}
-                      onChange={(event) => setTuningReserveGb(event.target.value)}
-                      disabled={!autoTune}
-                    />
-                  </div>
-                  <div>
-                    <label className="block text-sm font-medium mb-2">Preview Stride</label>
-                    <input
-                      type="text"
-                      value={previewStride}
-                      onChange={(event) => setPreviewStride(event.target.value)}
-                      placeholder="auto"
-                    />
-                  </div>
-                  <div>
-                    <label className="block text-sm font-medium mb-2">Max Cache Frames</label>
-                    <input
-                      type="text"
-                      value={maxCacheFrames}
-                      onChange={(event) => setMaxCacheFrames(event.target.value)}
-                      placeholder="auto"
-                    />
-                  </div>
-                  <div>
-                    <label className="block text-sm font-medium mb-2">Max Cache Cap</label>
-                    <input
-                      type="text"
-                      value={maxCacheCap}
-                      onChange={(event) => setMaxCacheCap(event.target.value)}
-                      placeholder="auto"
-                    />
-                  </div>
-                  <div>
-                    <label className="block text-sm font-medium mb-2">Chunk Size (frames)</label>
-                    <input
-                      type="text"
-                      value={chunkSize}
-                      onChange={(event) => setChunkSize(event.target.value)}
-                      placeholder="auto"
-                    />
-                  </div>
-                  <div>
-                    <label className="block text-sm font-medium mb-2">Chunk Seconds</label>
-                    <input
-                      type="text"
-                      value={chunkSeconds}
-                      onChange={(event) => setChunkSeconds(event.target.value)}
-                      placeholder="auto"
-                    />
-                  </div>
-                  <div>
-                    <label className="block text-sm font-medium mb-2">Chunk Overlap</label>
-                    <input
-                      type="text"
-                      value={chunkOverlap}
-                      onChange={(event) => setChunkOverlap(event.target.value)}
-                    />
-                  </div>
-                  <div>
-                    <label className="block text-sm font-medium mb-2">Process Start Frame</label>
-                    <input
-                      type="text"
-                      value={processStartFrame}
-                      onChange={(event) => setProcessStartFrame(event.target.value)}
-                      placeholder="start frame index"
-                    />
-                  </div>
-                  <div>
-                    <label className="block text-sm font-medium mb-2">Process End Frame</label>
-                    <input
-                      type="text"
-                      value={processEndFrame}
-                      onChange={(event) => setProcessEndFrame(event.target.value)}
-                      placeholder="end frame index"
-                    />
-                  </div>
-                  <div>
-                    <label className="block text-sm font-medium mb-2">Compress Masks</label>
-                    <select
-                      className="dropdown"
-                      value={compressMode}
-                      onChange={(event) => setCompressMode(event.target.value)}
-                    >
-                      <option value="auto">Auto</option>
-                      <option value="on">On</option>
-                      <option value="off">Off</option>
-                    </select>
-                  </div>
-                    </div>
-                    <p className="text-xs text-gray-500 mt-2">
-                      Leave fields blank to let auto-tune decide.
-                    </p>
-                  </>
-                )}
-              </div>
-
-              <div className="control-panel">
-                <h2 className="text-2xl font-bold mb-4">Output Options</h2>
-                <div className="space-y-3">
-                  <label className="flex items-center gap-2 text-sm">
-                    <input type="checkbox" checked={exportVideo} onChange={(event) => setExportVideo(event.target.checked)} />
-                    Save annotated video
-                  </label>
-                  <label className="flex items-center gap-2 text-sm">
-                    <input type="checkbox" checked={exportElan} onChange={(event) => setExportElan(event.target.checked)} />
-                    Export ELAN file
-                  </label>
-                  <label className="flex items-center gap-2 text-sm">
-                    <input type="checkbox" checked={exportCsv} onChange={(event) => setExportCsv(event.target.checked)} />
-                    Save CSV frame data
-                  </label>
-                  <div>
-                    <label className="block text-sm font-medium mb-2">Output Directory (optional)</label>
-                    <input type="text" value={outputDir} onChange={(event) => setOutputDir(event.target.value)} />
-                  </div>
-                </div>
-              </div>
-            </div>
-
-            <div className="space-y-6">
-              <div className="control-panel">
-                <h2 className="text-xl font-bold mb-4">Preview</h2>
-                <div className="video-preview">
-                  {videoFile ? (
-                    <video src={URL.createObjectURL(videoFile)} controls />
+          <Grid>
+            {/* Left column - Steps */}
+            <Column lg={4} md={4} sm={4}>
+              {/* Step 1: Upload */}
+              <Tile style={{ marginBottom: "1rem" }}>
+                <div style={{ display: "flex", alignItems: "center", gap: "0.5rem", marginBottom: "1rem" }}>
+                  {videoUploaded ? (
+                    <Tag type="green" size="sm"><CheckmarkFilled size={12} /> Uploaded</Tag>
                   ) : (
-                    <div className="text-gray-400">No video loaded</div>
+                    <Tag type="gray" size="sm"><Number_1 size={12} /></Tag>
+                  )}
+                  <Upload size={16} style={{ color: videoUploaded ? "#198038" : "#525252" }} />
+                  <span style={{ fontWeight: 600 }}>Upload Video</span>
+                </div>
+
+                <input
+                  ref={inputRef}
+                  type="file"
+                  accept="video/*"
+                  style={{ display: "none" }}
+                  onChange={(e) => handleFileUpload(e.target.files)}
+                />
+
+                <Button
+                  kind={videoUploaded ? "tertiary" : "primary"}
+                  size="sm"
+                  style={{ width: "100%" }}
+                  onClick={() => inputRef.current?.click()}
+                  disabled={busy}
+                  renderIcon={Upload}
+                >
+                  {busy && !videoUploaded ? "Uploading..." : videoUploaded ? "Change Video" : "Select Video"}
+                </Button>
+
+                {videoFile && (
+                  <p style={{ fontSize: "0.75rem", color: "#525252", marginTop: "0.5rem" }}>
+                    {videoFile.name}
+                  </p>
+                )}
+              </Tile>
+
+              {/* Step 2: Extract */}
+              <Tile style={{ marginBottom: "1rem", opacity: videoUploaded ? 1 : 0.5 }}>
+                <div style={{ display: "flex", alignItems: "center", gap: "0.5rem", marginBottom: "1rem" }}>
+                  {framesReady ? (
+                    <Tag type="green" size="sm"><CheckmarkFilled size={12} /> {frameCount} frames</Tag>
+                  ) : (
+                    <Tag type={videoUploaded ? "blue" : "gray"} size="sm"><Number_2 size={12} /></Tag>
+                  )}
+                  <Cut size={16} style={{ color: framesReady ? "#198038" : "#525252" }} />
+                  <span style={{ fontWeight: 600 }}>Extract Frames</span>
+                </div>
+
+                <Button
+                  kind={framesReady ? "tertiary" : "primary"}
+                  size="sm"
+                  style={{ width: "100%" }}
+                  onClick={handleExtractFrames}
+                  disabled={busy || !videoUploaded}
+                  renderIcon={Video}
+                >
+                  {busy && videoUploaded && !framesReady ? "Extracting..." : framesReady ? "Re-extract" : "Extract Frames"}
+                </Button>
+              </Tile>
+
+              {/* Step 3: Continue */}
+              <Tile style={{ opacity: framesReady ? 1 : 0.5 }}>
+                <div style={{ display: "flex", alignItems: "center", gap: "0.5rem", marginBottom: "1rem" }}>
+                  <Tag type={framesReady ? "blue" : "gray"} size="sm"><Number_3 size={12} /></Tag>
+                  <Play size={16} style={{ color: framesReady ? "#0f62fe" : "#525252" }} />
+                  <span style={{ fontWeight: 600 }}>Start Annotation</span>
+                </div>
+
+                <Button
+                  size="sm"
+                  style={{ width: "100%" }}
+                  onClick={handleSaveConfig}
+                  disabled={busy || !framesReady}
+                  renderIcon={Play}
+                >
+                  Continue
+                </Button>
+              </Tile>
+
+              {/* Status notification */}
+              {status && (
+                <div style={{ marginTop: "1rem" }}>
+                  <InlineNotification
+                    kind={statusType === "error" ? "error" : statusType === "warning" ? "warning" : statusType === "success" ? "success" : "info"}
+                    title={status}
+                    lowContrast
+                    hideCloseButton
+                  />
+                </div>
+              )}
+            </Column>
+
+            {/* Center column - Video preview */}
+            <Column lg={8} md={4} sm={4}>
+              <Tile style={{ padding: 0, overflow: "hidden" }}>
+                <div
+                  style={{
+                    backgroundColor: "#000",
+                    aspectRatio: "16/9",
+                    display: "flex",
+                    alignItems: "center",
+                    justifyContent: "center",
+                  }}
+                >
+                  {videoFile ? (
+                    <video
+                      ref={videoRef}
+                      src={URL.createObjectURL(videoFile)}
+                      controls
+                      style={{ width: "100%", height: "100%", objectFit: "contain" }}
+                    />
+                  ) : (
+                    <div style={{ textAlign: "center", color: "#8d8d8d", padding: "2rem" }}>
+                      <div style={{
+                        width: "120px",
+                        height: "120px",
+                        borderRadius: "50%",
+                        background: "linear-gradient(135deg, #393939 0%, #262626 100%)",
+                        margin: "0 auto 1.5rem",
+                        display: "flex",
+                        alignItems: "center",
+                        justifyContent: "center",
+                        border: "3px dashed #525252"
+                      }}>
+                        <VideoFilled size={48} style={{ color: "#6f6f6f" }} />
+                      </div>
+                      <p style={{ fontSize: "1rem", fontWeight: 500, marginBottom: "0.5rem" }}>
+                        No video selected
+                      </p>
+                      <p style={{ fontSize: "0.875rem", opacity: 0.7 }}>
+                        Upload a video file to begin
+                      </p>
+                      <div style={{
+                        marginTop: "1.5rem",
+                        display: "flex",
+                        justifyContent: "center",
+                        gap: "0.75rem",
+                        flexWrap: "wrap"
+                      }}>
+                        <Tag type="cool-gray" size="sm">MP4</Tag>
+                        <Tag type="cool-gray" size="sm">MOV</Tag>
+                        <Tag type="cool-gray" size="sm">AVI</Tag>
+                        <Tag type="cool-gray" size="sm">MKV</Tag>
+                      </div>
+                    </div>
                   )}
                 </div>
-                <p className="text-sm text-gray-500 mt-3">{status}</p>
-                {missingSteps.length > 0 && (
-                  <div className="status-box error">
-                    <div className="font-semibold mb-1">Complete before continuing:</div>
-                    <ul className="list-disc list-inside">
-                      {missingSteps.map((step) => (
-                        <li key={step}>{step}</li>
-                      ))}
-                    </ul>
-                  </div>
-                )}
-                {framesReady && frameCount > 0 && (
-                  <p className="text-xs text-gray-500 mt-2">Detected {frameCount} extracted frames.</p>
-                )}
-              </div>
+              </Tile>
 
-              <div className="control-panel">
-                <h2 className="text-xl font-bold mb-4">Quick Stats</h2>
-                <div className="grid grid-cols-2 gap-3">
-                  <div className="stat-card">
-                    <p className="text-xs text-gray-500">Objects</p>
-                    <p className="text-lg font-bold">---</p>
+              {/* Trim controls */}
+              {videoUploaded && !framesReady && (
+                <Tile style={{ marginTop: "1rem" }}>
+                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "1rem" }}>
+                    <span style={{ fontWeight: 600, display: "flex", alignItems: "center", gap: "0.5rem" }}>
+                      <Cut size={16} /> Trim Video (optional)
+                    </span>
+                    <Button
+                      kind="ghost"
+                      size="sm"
+                      onClick={async () => {
+                        try {
+                          setStatus("Scanning for grey frames...");
+                          const result = await detectGreyStart(sessionId);
+                          if (result.first_valid_time > 0) {
+                            setTrimStart(String(result.first_valid_time));
+                            setStatus(`Found ${result.first_valid_frame} grey frames. Start set to ${result.first_valid_time}s`);
+                            setStatusType("success");
+                          } else {
+                            setStatus("No grey frames detected");
+                            setStatusType("info");
+                          }
+                        } catch (err) {
+                          setStatus(err.message);
+                          setStatusType("error");
+                        }
+                      }}
+                      disabled={busy}
+                    >
+                      Auto-detect grey start
+                    </Button>
                   </div>
-                  <div className="stat-card">
-                    <p className="text-xs text-gray-500">Targets</p>
-                    <p className="text-lg font-bold">---</p>
+                  <Grid narrow>
+                    <Column lg={8} md={4} sm={2}>
+                      <TextInput
+                        id="trim-start"
+                        labelText="Start (seconds)"
+                        placeholder="0"
+                        value={trimStart}
+                        onChange={(e) => setTrimStart(e.target.value)}
+                        size="sm"
+                      />
+                    </Column>
+                    <Column lg={8} md={4} sm={2}>
+                      <TextInput
+                        id="trim-end"
+                        labelText="End (seconds)"
+                        placeholder="end"
+                        value={trimEnd}
+                        onChange={(e) => setTrimEnd(e.target.value)}
+                        size="sm"
+                      />
+                    </Column>
+                  </Grid>
+                </Tile>
+              )}
+
+              {/* Ready indicator */}
+              {framesReady && (
+                <InlineNotification
+                  kind="success"
+                  title={`${frameCount} frames ready`}
+                  subtitle="Click 'Continue' to start annotation"
+                  lowContrast
+                  hideCloseButton
+                  style={{ marginTop: "1rem" }}
+                />
+              )}
+            </Column>
+
+            {/* Right column - Settings */}
+            <Column lg={4} md={8} sm={4}>
+              <Accordion>
+                {/* Model & Detection */}
+                <AccordionItem title={<span style={{ display: "flex", alignItems: "center", gap: "0.5rem" }}><MachineLearning size={16} /> Model & Detection</span>}>
+                  <div style={{ display: "flex", flexDirection: "column", gap: "1rem" }}>
+                    <Select
+                      id="model-select"
+                      labelText="Model"
+                      value={modelKey}
+                      onChange={(e) => setModelKey(e.target.value)}
+                    >
+                      {models.map((model) => (
+                        <SelectItem
+                          key={model.key}
+                          value={model.key}
+                          text={model.label + (model.available ? "" : " (missing)")}
+                          disabled={!model.available}
+                        />
+                      ))}
+                    </Select>
+
+                    <div>
+                      <label style={{ fontSize: "0.75rem", color: "#525252" }}>
+                        Overlap Threshold: {threshold}%
+                      </label>
+                      <Slider
+                        min={1}
+                        max={50}
+                        value={threshold}
+                        onChange={({ value }) => setThreshold(value)}
+                        hideTextInput
+                      />
+                    </div>
+
+                    <TextInput
+                      id="batch-size"
+                      labelText="Batch Size"
+                      value={String(batchSize)}
+                      onChange={(e) => setBatchSize(e.target.value)}
+                      size="sm"
+                    />
+
+                    <Checkbox
+                      id="auto-fallback"
+                      labelText={<span style={{ display: "flex", alignItems: "center", gap: "0.5rem" }}><Filter size={14} /> Auto fallback to CPU</span>}
+                      checked={autoFallback}
+                      onChange={(_, { checked }) => setAutoFallback(checked)}
+                    />
+                    <Checkbox
+                      id="auto-tune"
+                      labelText={<span style={{ display: "flex", alignItems: "center", gap: "0.5rem" }}><Meter size={14} /> Auto tune for memory</span>}
+                      checked={autoTune}
+                      onChange={(_, { checked }) => setAutoTune(checked)}
+                    />
                   </div>
-                  <div className="stat-card">
-                    <p className="text-xs text-gray-500">Frames</p>
-                    <p className="text-lg font-bold">---</p>
+                </AccordionItem>
+
+                {/* Speed Controls */}
+                <AccordionItem title={<span style={{ display: "flex", alignItems: "center", gap: "0.5rem" }}><Rocket size={16} /> Speed Controls</span>}>
+                  <div style={{ display: "flex", flexDirection: "column", gap: "1rem" }}>
+                    <Select
+                      id="speed-preset"
+                      labelText="Performance Preset"
+                      value={speedPreset}
+                      onChange={(e) => setSpeedPreset(e.target.value)}
+                    >
+                      <SelectItem value="slow" text="Slow (best quality)" />
+                      <SelectItem value="medium" text="Medium" />
+                      <SelectItem value="fast" text="Fast" />
+                      <SelectItem value="ultra" text="Ultra" />
+                      <SelectItem value="custom" text="Custom" />
+                    </Select>
+
+                    {speedPreset !== "slow" && (
+                      <InlineNotification
+                        kind="warning"
+                        title="Faster = lower quality"
+                        lowContrast
+                        hideCloseButton
+                      />
+                    )}
+
+                    <TextInput
+                      id="frame-stride"
+                      labelText="Frame Stride"
+                      value={String(frameStride)}
+                      onChange={(e) => {
+                        setFrameStride(Number(e.target.value) || 1);
+                        setSpeedPreset("custom");
+                      }}
+                      size="sm"
+                    />
+
+                    <Checkbox
+                      id="roi-enabled"
+                      labelText={<span style={{ display: "flex", alignItems: "center", gap: "0.5rem" }}><Crop size={14} /> Enable ROI crop</span>}
+                      checked={roiEnabled}
+                      onChange={(_, { checked }) => {
+                        setRoiEnabled(checked);
+                        setSpeedPreset("custom");
+                      }}
+                    />
                   </div>
-                  <div className="stat-card">
-                    <p className="text-xs text-gray-500">Status</p>
-                    <p className="text-lg font-bold">Ready</p>
+                </AccordionItem>
+
+                {/* Output Options */}
+                <AccordionItem title={<span style={{ display: "flex", alignItems: "center", gap: "0.5rem" }}><Export size={16} /> Output Options</span>}>
+                  <div style={{ display: "flex", flexDirection: "column", gap: "1rem" }}>
+                    <Checkbox
+                      id="export-video"
+                      labelText={<span style={{ display: "flex", alignItems: "center", gap: "0.5rem" }}><Video size={14} /> Annotated video</span>}
+                      checked={exportVideo}
+                      onChange={(_, { checked }) => setExportVideo(checked)}
+                    />
+                    <Checkbox
+                      id="export-elan"
+                      labelText={<span style={{ display: "flex", alignItems: "center", gap: "0.5rem" }}><ChartMultitype size={14} /> ELAN file (.eaf)</span>}
+                      checked={exportElan}
+                      onChange={(_, { checked }) => setExportElan(checked)}
+                    />
+                    <Checkbox
+                      id="export-csv"
+                      labelText={<span style={{ display: "flex", alignItems: "center", gap: "0.5rem" }}><DocumentExport size={14} /> CSV data</span>}
+                      checked={exportCsv}
+                      onChange={(_, { checked }) => setExportCsv(checked)}
+                    />
+                    <TextInput
+                      id="output-dir"
+                      labelText={<span style={{ display: "flex", alignItems: "center", gap: "0.5rem" }}><Folder size={14} /> Output Directory</span>}
+                      placeholder="(optional)"
+                      value={outputDir}
+                      onChange={(e) => setOutputDir(e.target.value)}
+                      size="sm"
+                    />
                   </div>
-                </div>
-              </div>
-            </div>
-          </div>
+                </AccordionItem>
+
+                {/* Advanced */}
+                <AccordionItem title={<span style={{ display: "flex", alignItems: "center", gap: "0.5rem" }}><SettingsAdjust size={16} /> Advanced (rarely needed)</span>}>
+                  <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "0.5rem" }}>
+                    <TextInput
+                      id="tune-target"
+                      labelText="Tune target"
+                      value={tuningTarget}
+                      onChange={(e) => setTuningTarget(e.target.value)}
+                      size="sm"
+                      disabled={!autoTune}
+                    />
+                    <TextInput
+                      id="reserve-gb"
+                      labelText="Reserve GB"
+                      value={tuningReserveGb}
+                      onChange={(e) => setTuningReserveGb(e.target.value)}
+                      size="sm"
+                      disabled={!autoTune}
+                    />
+                    <TextInput
+                      id="preview-stride"
+                      labelText="Preview stride"
+                      value={previewStride}
+                      onChange={(e) => setPreviewStride(e.target.value)}
+                      size="sm"
+                    />
+                    <TextInput
+                      id="max-cache"
+                      labelText="Max cache"
+                      value={maxCacheFrames}
+                      onChange={(e) => setMaxCacheFrames(e.target.value)}
+                      size="sm"
+                    />
+                    <TextInput
+                      id="chunk-size"
+                      labelText="Chunk size"
+                      value={chunkSize}
+                      onChange={(e) => setChunkSize(e.target.value)}
+                      size="sm"
+                    />
+                    <TextInput
+                      id="start-frame"
+                      labelText="Start frame"
+                      value={processStartFrame}
+                      onChange={(e) => setProcessStartFrame(e.target.value)}
+                      size="sm"
+                    />
+                    <TextInput
+                      id="end-frame"
+                      labelText="End frame"
+                      value={processEndFrame}
+                      onChange={(e) => setProcessEndFrame(e.target.value)}
+                      size="sm"
+                    />
+                    <Select
+                      id="compress"
+                      labelText="Compress"
+                      value={compressMode}
+                      onChange={(e) => setCompressMode(e.target.value)}
+                      size="sm"
+                    >
+                      <SelectItem value="auto" text="Auto" />
+                      <SelectItem value="on" text="On" />
+                      <SelectItem value="off" text="Off" />
+                    </Select>
+                  </div>
+                </AccordionItem>
+              </Accordion>
+            </Column>
+          </Grid>
         </div>
       </main>
     </div>
