@@ -1,0 +1,41 @@
+// Carbon Design System - Simplified import for Vite compatibility
+@import '@carbon/react/scss/reset';
+@import '@carbon/react/scss/grid';
+@import '@carbon/react/scss/components';
+
+// Global resets
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  font-family: 'IBM Plex Sans', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  background-color: #f4f4f4;
+  color: #161616;
+}
+
+// App shell
+.app-shell {
+  min-height: 100vh;
+  display: flex;
+  flex-direction: column;
+  background-color: #f4f4f4;
+}
+
+.app-content {
+  flex: 1;
+  padding: 1rem;
+
+  @media (min-width: 672px) {
+    padding: 2rem;
+  }
+}
+
+// Page container
+.page-container {
+  max-width: 1584px;
+  margin: 0 auto;
+}

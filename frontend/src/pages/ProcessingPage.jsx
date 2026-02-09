@@ -1,14 +1,47 @@
-import React, { useEffect, useState } from "react";
+import React, { useEffect, useState, useRef } from "react";
 import { Link, useNavigate } from "react-router-dom";
-import { startProcessing, fetchProcessingStatus, getProcessingPreviewUrl } from "../api.js";
+import { API_BASE, startProcessing, fetchProcessingStatus, getProcessingPreviewUrl } from "../api.js";
+import {
+  Button,
+  Grid,
+  Column,
+  Tile,
+  Tag,
+  InlineNotification,
+  InlineLoading,
+  ProgressBar,
+  ProgressIndicator,
+  ProgressStep,
+} from "@carbon/react";
+import {
+  ArrowLeft,
+  ArrowRight,
+  Hourglass,
+  Checkmark,
+  ErrorFilled,
+  Time,
+  Laptop,
+  DataBase,
+  Dashboard,
+  Activity,
+  Video,
+  CircleFilled,
+  WarningAlt,
+  ChartLine,
+} from "@carbon/icons-react";
 
 export default function ProcessingPage() {
   const [sessionId, setSessionId] = useState("");
-  const [status, setStatus] = useState("Idle");
+  const [status, setStatus] = useState("idle");
   const [progress, setProgress] = useState(0);
   const [message, setMessage] = useState("");
-  const [busy, setBusy] = useState(false);
   const [previewUrl, setPreviewUrl] = useState("");
+  const [systemStats, setSystemStats] = useState(null);
+  const [startTime, setStartTime] = useState(null);
+  const [elapsedTime, setElapsedTime] = useState(0);
+  const [statusError, setStatusError] = useState(null);
+  const [fetchErrorCount, setFetchErrorCount] = useState(0);
+  const hasStarted = useRef(false);
   const navigate = useNavigate();
 
   useEffect(() => {
@@ -18,29 +51,96 @@ export default function ProcessingPage() {
     }
   }, []);
 
+  // Auto-start processing when session is loaded
+  useEffect(() => {
+    if (!sessionId || hasStarted.current) return;
+
+    async function autoStart() {
+      try {
+        hasStarted.current = true;
+        await startProcessing(sessionId);
+        setStartTime(Date.now());
+        setMessage("Processing started...");
+      } catch (err) {
+        if (!err.message.includes("already")) {
+          setMessage(err.message);
+        }
+        setStartTime(Date.now());
+      }
+    }
+
+    autoStart();
+  }, [sessionId]);
+
+  // Poll processing status
   useEffect(() => {
     let timer;
+    let errorCount = 0;
+    let lastStatus = "idle";
+
     if (!sessionId) return;
 
     async function poll() {
       try {
         const data = await fetchProcessingStatus(sessionId);
-        setStatus(data.status || "unknown");
+        setStatusError(null);
+        setFetchErrorCount(0);
+        errorCount = 0;
+        lastStatus = data.status || "unknown";
+        setStatus(lastStatus);
         setProgress(Math.round((data.progress || 0) * 100));
         setMessage(data.message || "");
         if (data.status === "completed") {
           navigate("/results");
         }
       } catch (err) {
-        setMessage(err.message);
+        errorCount++;
+        setFetchErrorCount(errorCount);
+        setStatusError(err.message);
+        if (errorCount >= 3 && (lastStatus === "processing" || lastStatus === "saving")) {
+          setMessage("Connection lost - processing may have completed. Check results.");
+        }
       }
     }
 
     poll();
-    timer = setInterval(poll, 4000);
+    timer = setInterval(poll, 3000);
     return () => clearInterval(timer);
   }, [sessionId, navigate]);
 
+  // Poll system stats
+  useEffect(() => {
+    let timer;
+
+    async function fetchStats() {
+      try {
+        const res = await fetch(`${API_BASE}/system/stats`);
+        if (res.ok) {
+          const data = await res.json();
+          setSystemStats(data);
+        }
+      } catch (err) {
+        // Silent fail
+      }
+    }
+
+    fetchStats();
+    timer = setInterval(fetchStats, 2000);
+    return () => clearInterval(timer);
+  }, []);
+
+  // Update elapsed time
+  useEffect(() => {
+    let timer;
+    if (startTime && status !== "completed" && status !== "error") {
+      timer = setInterval(() => {
+        setElapsedTime(Math.floor((Date.now() - startTime) / 1000));
+      }, 1000);
+    }
+    return () => clearInterval(timer);
+  }, [startTime, status]);
+
+  // Refresh preview
   useEffect(() => {
     let timer;
     if (!sessionId) return;
@@ -51,124 +151,204 @@ export default function ProcessingPage() {
     };
 
     refreshPreview();
-    timer = setInterval(refreshPreview, 3000);
+    timer = setInterval(refreshPreview, 4000);
     return () => clearInterval(timer);
   }, [sessionId]);
 
-  async function handleStart() {
-    if (!sessionId) {
-      setMessage("No session found. Return to Config.");
-      return;
-    }
-    try {
-      setBusy(true);
-      await startProcessing(sessionId);
-      setMessage("Processing started.");
-    } catch (err) {
-      setMessage(err.message);
-    } finally {
-      setBusy(false);
+  function formatTime(seconds) {
+    const mins = Math.floor(seconds / 60);
+    const secs = seconds % 60;
+    return `${mins}:${secs.toString().padStart(2, "0")}`;
+  }
+
+  function getStatusTag() {
+    switch (status) {
+      case "processing":
+        return <Tag type="blue" size="sm"><CircleFilled size={10} style={{ marginRight: 4, animation: "pulse 1.5s infinite" }} /> Processing</Tag>;
+      case "completed":
+        return <Tag type="green" size="sm"><Checkmark size={12} /> Complete</Tag>;
+      case "error":
+        return <Tag type="red" size="sm"><ErrorFilled size={12} /> Error</Tag>;
+      case "saving":
+        return <Tag type="purple" size="sm"><Hourglass size={12} /> Saving</Tag>;
+      case "initializing":
+        return <Tag type="teal" size="sm"><Hourglass size={12} /> Loading Model</Tag>;
+      default:
+        return <Tag type="gray" size="sm">Initializing</Tag>;
     }
   }
 
+  function StatRing({ value, color, label, sublabel }) {
+    const radius = 34;
+    const circumference = 2 * Math.PI * radius;
+    const offset = circumference - (value / 100) * circumference;
+
+    return (
+      <div style={{ display: "flex", alignItems: "center", gap: "1rem" }}>
+        <div style={{ position: "relative", width: "80px", height: "80px" }}>
+          <svg width="80" height="80" style={{ transform: "rotate(-90deg)" }}>
+            <circle
+              cx="40"
+              cy="40"
+              r={radius}
+              fill="none"
+              stroke="#e0e0e0"
+              strokeWidth="6"
+            />
+            <circle
+              cx="40"
+              cy="40"
+              r={radius}
+              fill="none"
+              stroke={color}
+              strokeWidth="6"
+              strokeDasharray={circumference}
+              strokeDashoffset={offset}
+              strokeLinecap="round"
+              style={{ transition: "stroke-dashoffset 0.5s ease" }}
+            />
+          </svg>
+          <div style={{
+            position: "absolute",
+            inset: 0,
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            fontWeight: 600,
+            fontSize: "1rem"
+          }}>
+            {value}%
+          </div>
+        </div>
+        <div>
+          <div style={{ fontWeight: 500, fontSize: "0.875rem" }}>{label}</div>
+          <div style={{ color: "#6f6f6f", fontSize: "0.75rem" }}>{sublabel}</div>
+        </div>
+      </div>
+    );
+  }
+
   return (
-    <div className="bg-white text-black">
+    <div className="app-shell">
+      {/* Add pulse animation */}
       <style>{`
-        body { font-family: 'Inter', sans-serif; }
-        .control-panel { background: white; border: 2px solid #e5e7eb; border-radius: 12px; padding: 24px; transition: all 0.3s ease; }
-        .btn-primary { background: black; color: white; padding: 12px 24px; border-radius: 8px; font-weight: 600; transition: all 0.3s ease; border: none; cursor: pointer; }
-        .btn-primary:hover:not(:disabled) { background: #374151; transform: translateY(-2px); box-shadow: 0 4px 12px rgba(0,0,0,0.2); }
-        .btn-primary:disabled { background: #d1d5db; cursor: not-allowed; }
-        .btn-secondary { background: white; color: black; border: 2px solid black; padding: 12px 24px; border-radius: 8px; font-weight: 600; transition: all 0.3s ease; cursor: pointer; }
-        .btn-secondary:hover { background: black; color: white; }
-        .progress-steps { display: flex; align-items: center; justify-content: center; gap: 8px; margin-bottom: 32px; }
-        .step { display: flex; align-items: center; gap: 8px; }
-        .step-circle { width: 32px; height: 32px; border-radius: 50%; border: 2px solid #e5e7eb; display: flex; align-items: center; justify-content: center; font-weight: 600; font-size: 14px; }
-        .step-circle.active { background: black; color: white; border-color: black; }
-        .step-circle.completed { background: #d1d5db; color: white; border-color: #d1d5db; }
-        .step-line { width: 40px; height: 2px; background: #e5e7eb; }
-        .video-preview { background: #000; border: 2px solid #e5e7eb; border-radius: 12px; aspect-ratio: 16/9; display: flex; align-items: center; justify-content: center; position: relative; overflow: hidden; }
-        .progress-bar { height: 12px; background: #e5e7eb; border-radius: 6px; overflow: hidden; }
-        .progress-fill { height: 100%; background: black; transition: width 0.3s ease; position: relative; }
-        .progress-fill::after { content: ''; position: absolute; top: 0; left: 0; bottom: 0; right: 0; background: linear-gradient(90deg, transparent, rgba(255,255,255,0.3), transparent); animation: shimmer 2s infinite; }
-        @keyframes shimmer { 0% { transform: translateX(-100%); } 100% { transform: translateX(100%); } }
-        .stat-card { background: white; border: 2px solid #e5e7eb; border-radius: 8px; padding: 16px; }
-        .log-entry { padding: 12px; border-left: 3px solid #e5e7eb; margin-bottom: 8px; font-size: 13px; font-family: 'Courier New', monospace; background: #f9fafb; border-radius: 4px; }
-        .log-entry.info { border-left-color: #3b82f6; }
-        .spinner { border: 3px solid #e5e7eb; border-top: 3px solid black; border-radius: 50%; width: 40px; height: 40px; animation: spin 1s linear infinite; }
-        @keyframes spin { 0% { transform: rotate(0deg); } 100% { transform: rotate(360deg); } }
+        @keyframes pulse {
+          0%, 100% { opacity: 1; }
+          50% { opacity: 0.4; }
+        }
       `}</style>
 
-      <header className="bg-white border-b-2 border-black fixed w-full z-50">
-        <nav className="container mx-auto px-6 py-4 flex justify-between items-center">
-          <div className="text-xl font-semibold flex items-center">
-            <i className="fas fa-eye mr-3"></i>
-            EnvisionObjectAnnotator
-          </div>
-          <div className="flex space-x-4">
-            <Link className="btn-secondary" to="/annotation" aria-label="Cancel processing">
-              <i className="fas fa-times mr-2"></i>Cancel
-            </Link>
-            <Link className="btn-primary" to="/results" aria-label="View results">
-              View Results<i className="fas fa-arrow-right ml-2"></i>
-            </Link>
-          </div>
-        </nav>
+      {/* Header */}
+      <header
+        style={{
+          borderBottom: "1px solid #e0e0e0",
+          padding: "0 1rem",
+          height: "48px",
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "space-between",
+          backgroundColor: "#fff",
+          position: "sticky",
+          top: 0,
+          zIndex: 100,
+        }}
+      >
+        <div style={{ display: "flex", alignItems: "center", gap: "0.75rem" }}>
+          <Activity size={20} />
+          <span style={{ fontWeight: 600 }}>Processing</span>
+          {getStatusTag()}
+        </div>
+        <div style={{ display: "flex", gap: "0.5rem" }}>
+          <Button kind="secondary" size="sm" renderIcon={ArrowLeft} as={Link} to="/annotation">
+            Back
+          </Button>
+          <Button size="sm" renderIcon={ArrowRight} as={Link} to="/results">
+            Results
+          </Button>
+        </div>
       </header>
 
-      <main className="pt-24 pb-16">
-        <div className="container mx-auto px-6">
-          <div className="progress-steps">
-            <div className="step">
-              <div className="step-circle completed">1</div>
-              <span className="text-sm font-medium text-gray-600">Setup</span>
-            </div>
-            <div className="step-line"></div>
-            <div className="step">
-              <div className="step-circle completed">2</div>
-              <span className="text-sm font-medium text-gray-600">Configuration</span>
-            </div>
-            <div className="step-line"></div>
-            <div className="step">
-              <div className="step-circle completed">3</div>
-              <span className="text-sm font-medium text-gray-600">Annotation</span>
-            </div>
-            <div className="step-line"></div>
-            <div className="step">
-              <div className="step-circle active">4</div>
-              <span className="text-sm font-medium">Processing</span>
-            </div>
+      <main className="app-content">
+        <div className="page-container">
+          {/* Progress indicator */}
+          <div style={{ marginBottom: "1.5rem" }}>
+            <ProgressIndicator currentIndex={3} spaceEqually>
+              <ProgressStep label="Upload" secondaryLabel="Complete" />
+              <ProgressStep label="Configure" secondaryLabel="Complete" />
+              <ProgressStep label="Annotate" secondaryLabel="Complete" />
+              <ProgressStep label="Process" secondaryLabel="Running..." />
+            </ProgressIndicator>
           </div>
 
-          <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
-            <div className="lg:col-span-2 space-y-6">
-              <div className="control-panel">
-                <h2 className="text-2xl font-bold mb-4">Processing Progress</h2>
-                <div className="progress-bar">
-                  <div className="progress-fill" style={{ width: `${progress}%` }}></div>
+          {/* Main progress card */}
+          <Tile style={{ marginBottom: "1.5rem" }}>
+            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: "1rem" }}>
+              <div style={{ display: "flex", alignItems: "center", gap: "1rem" }}>
+                <div style={{
+                  width: "48px",
+                  height: "48px",
+                  borderRadius: "50%",
+                  backgroundColor: status === "processing" ? "#e5f6ff" : status === "completed" ? "#defbe6" : "#f4f4f4",
+                  display: "flex",
+                  alignItems: "center",
+                  justifyContent: "center"
+                }}>
+                  {status === "processing" ? (
+                    <InlineLoading style={{ margin: 0 }} />
+                  ) : status === "completed" ? (
+                    <Checkmark size={24} style={{ color: "#198038" }} />
+                  ) : (
+                    <Hourglass size={24} style={{ color: "#525252" }} />
+                  )}
                 </div>
-                <div className="flex justify-between text-sm text-gray-500 mt-2">
-                  <span>Status: {status}</span>
-                  <span>{progress}%</span>
+                <div>
+                  <div style={{ fontSize: "1.5rem", fontWeight: 600 }}>{progress}%</div>
+                  <div style={{ fontSize: "0.875rem", color: "#525252" }}>{message || "Processing..."}</div>
                 </div>
-                <div className="mt-4">
-                  <button className="btn-primary" onClick={handleStart} disabled={busy}>
-                    Start Processing
-                  </button>
-                </div>
-                <p className="text-sm text-gray-500 mt-3">{message}</p>
               </div>
-
-              <div className="control-panel">
-                <h2 className="text-2xl font-bold mb-4">Processing Log</h2>
-                <div className="log-entry info">{message || "Waiting for updates..."}</div>
+              <div style={{ textAlign: "right" }}>
+                <div style={{ display: "flex", alignItems: "center", gap: "0.5rem", color: "#525252" }}>
+                  <Time size={16} />
+                  <span style={{ fontSize: "1.25rem", fontWeight: 500 }}>{formatTime(elapsedTime)}</span>
+                </div>
+                <div style={{ fontSize: "0.75rem", color: "#6f6f6f" }}>Elapsed time</div>
               </div>
             </div>
 
-            <div className="space-y-6">
-              <div className="control-panel">
-                <h2 className="text-xl font-bold mb-4">Preview</h2>
-                <div className="video-preview">
+            <ProgressBar
+              value={progress}
+              size="big"
+              status={status === "error" ? "error" : status === "completed" ? "finished" : "active"}
+            />
+
+            {statusError && fetchErrorCount >= 2 && (
+              <InlineNotification
+                kind="warning"
+                title="Connection issue"
+                subtitle={statusError}
+                lowContrast
+                hideCloseButton
+                style={{ marginTop: "1rem" }}
+                actions={
+                  <Button kind="ghost" size="sm" as={Link} to="/results">
+                    Check Results
+                  </Button>
+                }
+              />
+            )}
+          </Tile>
+
+          <Grid>
+            {/* Preview */}
+            <Column lg={12} md={6} sm={4}>
+              <Tile style={{ padding: 0, overflow: "hidden" }}>
+                <div style={{
+                  backgroundColor: "#161616",
+                  aspectRatio: "16/9",
+                  display: "flex",
+                  alignItems: "center",
+                  justifyContent: "center"
+                }}>
                   {previewUrl ? (
                     <img
                       src={previewUrl}
@@ -177,35 +357,85 @@ export default function ProcessingPage() {
                       style={{ width: "100%", height: "100%", objectFit: "contain" }}
                     />
                   ) : (
-                    <div className="spinner"></div>
+                    <div style={{ textAlign: "center", color: "#8d8d8d" }}>
+                      <InlineLoading description="Waiting for preview..." />
+                    </div>
                   )}
                 </div>
-                <p className="text-sm text-gray-500 mt-3">Live preview will appear here during processing.</p>
-              </div>
-
-              <div className="control-panel">
-                <h2 className="text-xl font-bold mb-4">Summary</h2>
-                <div className="grid grid-cols-2 gap-3">
-                  <div className="stat-card">
-                    <p className="text-xs text-gray-500">Frames</p>
-                    <p className="text-lg font-bold">---</p>
-                  </div>
-                  <div className="stat-card">
-                    <p className="text-xs text-gray-500">Objects</p>
-                    <p className="text-lg font-bold">---</p>
-                  </div>
-                  <div className="stat-card">
-                    <p className="text-xs text-gray-500">Events</p>
-                    <p className="text-lg font-bold">---</p>
-                  </div>
-                  <div className="stat-card">
-                    <p className="text-xs text-gray-500">Status</p>
-                    <p className="text-lg font-bold">{status}</p>
-                  </div>
+                <div style={{ padding: "0.75rem", backgroundColor: "#262626", color: "#c6c6c6", fontSize: "0.75rem", display: "flex", alignItems: "center", gap: "0.5rem" }}>
+                  <Video size={14} /> Live preview updates every 4 seconds
                 </div>
-              </div>
-            </div>
-          </div>
+              </Tile>
+            </Column>
+
+            {/* System Stats */}
+            <Column lg={4} md={2} sm={4}>
+              {/* GPU */}
+              {systemStats?.gpu && (
+                <Tile style={{ marginBottom: "1rem" }}>
+                  <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: "1rem" }}>
+                    <div style={{ display: "flex", alignItems: "center", gap: "0.5rem" }}>
+                      <Laptop size={16} />
+                      <span style={{ fontWeight: 600, fontSize: "0.875rem" }}>GPU</span>
+                    </div>
+                    <Tag type="cool-gray" size="sm">{systemStats.gpu.name}</Tag>
+                  </div>
+                  <StatRing
+                    value={systemStats.gpu.used_pct}
+                    color="#0f62fe"
+                    label={`${systemStats.gpu.reserved_gb} GB used`}
+                    sublabel={`of ${systemStats.gpu.total_gb} GB`}
+                  />
+                </Tile>
+              )}
+
+              {/* RAM */}
+              {systemStats?.ram && (
+                <Tile style={{ marginBottom: "1rem" }}>
+                  <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: "1rem" }}>
+                    <div style={{ display: "flex", alignItems: "center", gap: "0.5rem" }}>
+                      <DataBase size={16} />
+                      <span style={{ fontWeight: 600, fontSize: "0.875rem" }}>Memory</span>
+                    </div>
+                    <Tag type="cool-gray" size="sm">RAM</Tag>
+                  </div>
+                  <StatRing
+                    value={systemStats.ram.used_pct}
+                    color="#42be65"
+                    label={`${systemStats.ram.used_gb} GB used`}
+                    sublabel={`${systemStats.ram.available_gb} GB available`}
+                  />
+                </Tile>
+              )}
+
+              {/* CPU */}
+              {systemStats?.cpu && (
+                <Tile style={{ marginBottom: "1rem" }}>
+                  <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: "1rem" }}>
+                    <div style={{ display: "flex", alignItems: "center", gap: "0.5rem" }}>
+                      <Dashboard size={16} />
+                      <span style={{ fontWeight: 600, fontSize: "0.875rem" }}>CPU</span>
+                    </div>
+                    <Tag type="cool-gray" size="sm">{systemStats.cpu.cores} cores</Tag>
+                  </div>
+                  <StatRing
+                    value={systemStats.cpu.percent}
+                    color="#f1c21b"
+                    label={`${systemStats.cpu.percent}% usage`}
+                    sublabel={`${systemStats.cpu.cores} cores`}
+                  />
+                </Tile>
+              )}
+
+              {/* Fallback if no stats */}
+              {!systemStats?.gpu && !systemStats?.ram && !systemStats?.cpu && (
+                <Tile style={{ display: "flex", flexDirection: "column", alignItems: "center", textAlign: "center", padding: "2rem" }}>
+                  <Activity size={32} style={{ marginBottom: "0.5rem", color: "#6f6f6f" }} />
+                  <p style={{ fontSize: "0.875rem", color: "#6f6f6f" }}>Loading system stats...</p>
+                </Tile>
+              )}
+            </Column>
+          </Grid>
         </div>
       </main>
     </div>

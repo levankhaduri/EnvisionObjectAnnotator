@@ -44,6 +44,7 @@ class ConfigUpdate(BaseModel):
     output_dir: Optional[str] = None
     process_start_frame: Optional[int] = None
     process_end_frame: Optional[int] = None
+    enable_bidirectional: bool = False
 
 
 class Point(BaseModel):
@@ -81,6 +82,8 @@ class ResultsResponse(BaseModel):
 class FrameExtractionRequest(BaseModel):
     session_id: str
     quality: int = 2
+    start_time: Optional[float] = None  # trim start in seconds
+    end_time: Optional[float] = None    # trim end in seconds
 
 
 class FrameListResponse(BaseModel):
@@ -95,3 +98,30 @@ class FrameListResponse(BaseModel):
 class SampleClipRequest(BaseModel):
     session_id: str
     duration_seconds: float = 10.0
+
+
+class DetectGreyRequest(BaseModel):
+    session_id: str
+    max_frames: int = 300  # scan up to this many frames
+    variance_threshold: float = 100.0  # below this = grey/uniform
+
+
+class DetectGreyResponse(BaseModel):
+    first_valid_frame: int
+    first_valid_time: float  # in seconds
+    frames_scanned: int
+
+
+class SuggestedFrame(BaseModel):
+    frame_index: int
+    score: float
+    sharpness: float
+    brightness: float
+    method: str  # "basic" or "dinov2"
+
+
+class FrameSuggestionResponse(BaseModel):
+    session_id: str
+    suggested_frames: List[SuggestedFrame]
+    total_analyzed: int
+    method_used: str

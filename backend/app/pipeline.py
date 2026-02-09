@@ -20,7 +20,8 @@ except ImportError:  # pragma: no cover - optional dependency
 os.environ.setdefault("SAM2_OFFLOAD_VIDEO_TO_CPU", "true")
 os.environ.setdefault("SAM2_OFFLOAD_STATE_TO_CPU", "true")
 os.environ.setdefault("PYTORCH_ENABLE_MPS_FALLBACK", "1")
-os.environ.setdefault("CUDA_LAUNCH_BLOCKING", "1")
+# Note: CUDA_LAUNCH_BLOCKING=1 was removed — it serializes all GPU operations
+# and causes severe underutilization. Only re-enable for debugging CUDA errors.
 
 RAM_PRESSURE_THRESHOLD = 80
 
@@ -547,6 +548,7 @@ class UltraOptimizedProcessor:
         disk_store_max_in_memory=50,
         ram_pressure_threshold=RAM_PRESSURE_THRESHOLD,
         disk_store_enabled=True,
+        enable_bidirectional=False,
     ):
         self.predictor = predictor
         self.full_video_dir = video_dir
@@ -579,6 +581,7 @@ class UltraOptimizedProcessor:
         self.disk_store_max_in_memory = disk_store_max_in_memory
         self.ram_pressure_threshold = ram_pressure_threshold
         self.disk_store_enabled = disk_store_enabled
+        self.enable_bidirectional = enable_bidirectional
         self._mask_store = None
         self._disk_store_active = False
         self.frame_index_map = None
@@ -1076,7 +1079,7 @@ class UltraOptimizedProcessor:
                 self._store_frame_results(results, missing, prev_masks)
         return results
 
-    def process_video_with_memory_management(self, points_dict, labels_dict, object_names, debug=True):
+    def process_video_with_memory_management(self, points_dict, labels_dict, object_names, debug=True, multiframe_data=None):
         """Process video with ultra memory management and improved overlap detection."""
         last_exc = None
         self.partial_results = {}
@@ -1104,10 +1107,10 @@ class UltraOptimizedProcessor:
                             % (attempt + 1, self.batch_size, getattr(self.predictor, "device", "unknown"))
                         )
                     if attempt == 0:
-                        return self._process_standard_optimized(points_dict, labels_dict, object_names, debug)
+                        return self._process_standard_optimized(points_dict, labels_dict, object_names, debug, multiframe_data=multiframe_data)
                     if attempt == 1:
                         self.batch_size = self.batch_size // 2
-                        return self._process_standard_optimized(points_dict, labels_dict, object_names, debug)
+                        return self._process_standard_optimized(points_dict, labels_dict, object_names, debug, multiframe_data=multiframe_data)
                     return self._process_cpu_fallback(points_dict, labels_dict, object_names, debug)
                 except RuntimeError as exc:
                     if "out of memory" in str(exc).lower():
@@ -1132,7 +1135,7 @@ class UltraOptimizedProcessor:
         finally:
             ultra_cleanup_memory()
 
-    def _process_standard_optimized(self, points_dict, labels_dict, object_names, debug):
+    def _process_standard_optimized(self, points_dict, labels_dict, object_names, debug, multiframe_data=None):
         self._prepare_frame_source(points_dict)
         image_size = getattr(self.predictor, "image_size", 1024)
         bytes_per_frame = image_size * image_size * 3 * 4
@@ -1151,7 +1154,6 @@ class UltraOptimizedProcessor:
             offload_video_to_cpu=self.offload_video_to_cpu,
             offload_state_to_cpu=self.offload_state_to_cpu,
             async_loading_frames=async_loading_frames,
-            max_cache_frames=max_cache_frames,
         )
 
         self.predictor.reset_state(inference_state)
@@ -1198,9 +1200,15 @@ class UltraOptimizedProcessor:
 
         total_frames = len(self.frame_names)
         start_frame = max(0, min(self.reference_frame, total_frames - 1))
-        range_start = self.process_start_frame if self.process_start_frame is not None else start_frame
+        if self.enable_bidirectional:
+            range_start = self.process_start_frame if self.process_start_frame is not None else 0
+        else:
+            range_start = self.process_start_frame if self.process_start_frame is not None else start_frame
         range_end = self.process_end_frame if self.process_end_frame is not None else total_frames - 1
-        range_start = max(start_frame, min(int(range_start), total_frames - 1))
+        if self.enable_bidirectional:
+            range_start = max(0, min(int(range_start), total_frames - 1))
+        else:
+            range_start = max(start_frame, min(int(range_start), total_frames - 1))
         range_end = max(range_start, min(int(range_end), total_frames - 1))
         total_to_process = max(0, range_end - range_start + 1)
         if self.process_start_frame is not None or self.process_end_frame is not None:
@@ -1333,6 +1341,38 @@ class UltraOptimizedProcessor:
                             self._log(traceback.format_exc())
                         print(f"  Error adding prompts for object {obj_id}: {exc}")
                         continue
+
+                # Multiframe: add conditioning prompts from additional annotated frames
+                if multiframe_data and len(multiframe_data) > 1:
+                    if debug:
+                        self._log(
+                            "multiframe: adding %s additional conditioning frames"
+                            % (len(multiframe_data) - 1)
+                        )
+                    for mf_idx, (mf_points, mf_labels, _) in multiframe_data.items():
+                        if mf_idx == start_frame:
+                            continue
+                        for obj_id in mf_points:
+                            try:
+                                pts = np.array(mf_points[obj_id], dtype=np.float32)
+                                lbs = np.array(mf_labels[obj_id], dtype=np.int32)
+                                _, _, out_ml = self.predictor.add_new_points_or_box(
+                                    inference_state=inference_state,
+                                    frame_idx=mf_idx,
+                                    obj_id=obj_id,
+                                    points=pts,
+                                    labels=lbs,
+                                )
+                                del out_ml, pts, lbs
+                                ultra_cleanup_memory()
+                            except Exception as exc:
+                                if debug:
+                                    self._log(
+                                        "multiframe add failed: frame=%s obj_id=%s error=%s"
+                                        % (mf_idx, obj_id, exc)
+                                    )
+                                continue
+
                 max_track = range_end - start_frame
                 max_track = max(0, max_track)
                 last_processed, _ = _process_frames(
@@ -1343,6 +1383,66 @@ class UltraOptimizedProcessor:
                 )
                 if last_processed is None:
                     ultra_cleanup_memory()
+
+                # Backward propagation (if enabled and reference frame > range_start)
+                if self.enable_bidirectional and start_frame > range_start:
+                    if debug:
+                        self._log(
+                            "bidirectional: starting backward propagation from frame %s to %s"
+                            % (start_frame, range_start)
+                        )
+                    self.predictor.reset_state(inference_state)
+                    ultra_cleanup_memory()
+
+                    # Re-add prompts at reference frame
+                    for obj_id in points_dict:
+                        try:
+                            pts = np.array(points_dict[obj_id], dtype=np.float32)
+                            lbs = np.array(labels_dict[obj_id], dtype=np.int32)
+                            _, _, out_ml = self.predictor.add_new_points_or_box(
+                                inference_state=inference_state,
+                                frame_idx=start_frame,
+                                obj_id=obj_id,
+                                points=pts,
+                                labels=lbs,
+                            )
+                            del out_ml, pts, lbs
+                            ultra_cleanup_memory()
+                        except Exception as exc:
+                            if debug:
+                                self._log("backward add prompts failed: obj_id=%s error=%s" % (obj_id, exc))
+                            continue
+
+                    # Propagate backward
+                    max_track_backward = start_frame - range_start
+                    for out_frame_idx, out_obj_ids, out_mask_logits in self.predictor.propagate_in_video(
+                        inference_state,
+                        start_frame_idx=start_frame,
+                        max_frame_num_to_track=max_track_backward,
+                        reverse=True,
+                    ):
+                        try:
+                            global_frame_idx = self._map_frame_idx(out_frame_idx)
+                            if global_frame_idx in results:
+                                continue  # Don't overwrite forward results
+                            frame_result = {}
+                            for idx_in_batch, obj_id in enumerate(out_obj_ids):
+                                mask = (out_mask_logits[idx_in_batch] > 0.0).cpu().numpy().astype(np.uint8)
+                                if mask.ndim == 3:
+                                    mask = mask[0]
+                                if self.compress_masks:
+                                    mask = self._compress_mask(mask)
+                                frame_result[int(obj_id)] = mask
+                            self._store_frame_results(results, global_frame_idx, frame_result)
+                            frame_count += 1
+                            pbar.update(1)
+                        except Exception as exc:
+                            if debug:
+                                self._log("backward frame error: frame_idx=%s error=%s" % (out_frame_idx, exc))
+                            continue
+                    ultra_cleanup_memory()
+                    if debug:
+                        self._log("bidirectional: backward propagation complete")
             else:
                 if debug:
                     self._log("chunking enabled: chunk_size=%s chunk_overlap=%s" % (chunk_size, chunk_overlap))
@@ -1356,7 +1456,6 @@ class UltraOptimizedProcessor:
                             offload_video_to_cpu=self.offload_video_to_cpu,
                             offload_state_to_cpu=self.offload_state_to_cpu,
                             async_loading_frames=async_loading_frames,
-                            max_cache_frames=max_cache_frames,
                         )
                         self.predictor.reset_state(inference_state)
                         ultra_cleanup_memory()
