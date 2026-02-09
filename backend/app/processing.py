@@ -23,6 +23,7 @@ from .pipeline import (
     get_video_fps,
     get_gpu_memory_info,
 )
+from .resource_profiler import ResourceProfiler
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 REPO_DIR = BASE_DIR.parent
@@ -255,7 +256,8 @@ def _auto_tune_settings(frame_count, predictor, config, log_cb=None, fps=None):
         except (TypeError, ValueError):
             preview_stride = 1
     else:
-        target_previews = 600
+        # Reduced from 600 to 200 to lower overhead - updates every ~8-9 frames for typical videos
+        target_previews = 200
         preview_stride = max(1, int(frame_count / target_previews)) if frame_count else 1
 
     gpu_memory_fraction = None
@@ -307,6 +309,10 @@ def _auto_tune_settings(frame_count, predictor, config, log_cb=None, fps=None):
 
 
 def test_mask_preview(session_id, frame_index, object_name, points):
+    """Generate a mask preview using video predictor on a single frame (fast)."""
+    import tempfile
+    import shutil
+
     session = state.get_session(session_id)
     frames_dir = SESSIONS_DIR / session_id / "frames"
     if not frames_dir.exists():
@@ -314,11 +320,12 @@ def test_mask_preview(session_id, frame_index, object_name, points):
 
     use_mps = bool((session.config or {}).get("use_mps", False))
     model_key = (session.config or {}).get("model_key") or "auto"
-    predictor, _ = _build_image_predictor(use_mps=use_mps, model_key=model_key)
 
-    points_arr = np.array([[p["x"], p["y"]] for p in points], dtype=np.float32)
-    labels_arr = np.array([p["label"] for p in points], dtype=np.int32)
-    if points_arr.size == 0:
+    # Build coordinate arrays
+    coords_list = [[float(p["x"]), float(p["y"])] for p in points]
+    labels_list = [int(p["label"]) for p in points]
+
+    if len(coords_list) == 0:
         raise ValueError("No points provided")
 
     frame_path = frames_dir / f"{frame_index:05d}.jpg"
@@ -326,17 +333,61 @@ def test_mask_preview(session_id, frame_index, object_name, points):
     if frame is None:
         raise FileNotFoundError("Frame not found")
 
-    rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-    predictor.set_image(rgb_frame)
-    masks, _, _ = predictor.predict(
-        point_coords=points_arr,
-        point_labels=labels_arr,
-        multimask_output=False,
-        return_logits=True,
-        normalize_coords=True,
-    )
+    # Create a temp directory with just the one frame for fast loading
+    temp_dir = tempfile.mkdtemp(prefix="sam2_test_")
+    try:
+        # Copy single frame to temp dir as 00000.jpg (video predictor expects this format)
+        temp_frame_path = Path(temp_dir) / "00000.jpg"
+        shutil.copy2(frame_path, temp_frame_path)
 
-    mask = masks[0] > 0.0
+        from sam2.build_sam import build_sam2_video_predictor
+
+        configure_torch_ultra_conservative()
+        device = setup_device_ultra_optimized()
+        if device.type == "mps" and not use_mps:
+            device = torch.device("cpu")
+
+        entry = _select_model_entry(model_key=model_key)
+        model_cfg, checkpoint = str(entry["config"]), entry["checkpoint"]
+
+        with torch.inference_mode():
+            predictor = build_sam2_video_predictor(model_cfg, str(checkpoint), device=device)
+
+            # Initialize state with temp directory (only 1 frame)
+            inference_state = predictor.init_state(
+                video_path=temp_dir,
+                offload_video_to_cpu=True,
+                offload_state_to_cpu=True,
+                async_loading_frames=False,
+            )
+
+            # Add points for the object (frame_idx=0 since it's the only frame)
+            points_arr = np.array(coords_list, dtype=np.float32)
+            labels_arr = np.array(labels_list, dtype=np.int32)
+
+            _, out_obj_ids, out_mask_logits = predictor.add_new_points_or_box(
+                inference_state=inference_state,
+                frame_idx=0,  # Always 0 since temp dir has only 1 frame
+                obj_id=1,
+                points=points_arr,
+                labels=labels_arr,
+            )
+
+            # Get the mask from the logits
+            mask_logits = out_mask_logits[0]  # First object
+            mask = (mask_logits > 0.0).squeeze().cpu().numpy()
+
+            # Clean up predictor state
+            predictor.reset_state(inference_state)
+    finally:
+        # Clean up temp directory
+        shutil.rmtree(temp_dir, ignore_errors=True)
+
+    # Resize mask if needed (video predictor may output different size)
+    if mask.shape != (frame.shape[0], frame.shape[1]):
+        mask = cv2.resize(mask.astype(np.uint8), (frame.shape[1], frame.shape[0])) > 0
+
+    mask = mask.astype(bool)
 
     overlay = frame.copy()
     color = np.array([34, 197, 94], dtype=np.uint8)
@@ -358,12 +409,13 @@ class HeadlessProcessor:
     def __init__(self, processor):
         self._processor = processor
 
-    def process(self, points_dict, labels_dict, object_names):
+    def process(self, points_dict, labels_dict, object_names, multiframe_data=None):
         return self._processor.process_video_with_memory_management(
             points_dict,
             labels_dict,
             object_names,
             debug=True,
+            multiframe_data=multiframe_data,
         )
 
     def get_partial_results(self):
@@ -434,6 +486,70 @@ def _load_reference_annotations(session_id, reference_frame):
     return points_dict, labels_dict, object_names
 
 
+def _load_multiframe_annotations(session_id):
+    """Load annotations from all annotated frames.
+
+    Scans all frame_*.json files and builds a consistent object ID mapping
+    so the same object name gets the same ID across all frames.
+
+    Returns:
+        Tuple of (multiframe_data, object_name_to_id) where multiframe_data
+        is {frame_idx: (points_dict, labels_dict, object_names)}.
+    """
+    annotations_dir = SESSIONS_DIR / session_id / "annotations"
+    if not annotations_dir.exists():
+        raise FileNotFoundError("No annotations directory found")
+
+    frame_annotations = {}
+    global_object_names: set[str] = set()
+
+    for frame_file in sorted(annotations_dir.glob("frame_*.json")):
+        try:
+            frame_idx = int(frame_file.stem.split("_")[1])
+            data = json.loads(frame_file.read_text())
+            objects = data.get("objects", {})
+            if objects:
+                frame_annotations[frame_idx] = objects
+                global_object_names.update(objects.keys())
+        except (ValueError, json.JSONDecodeError):
+            continue
+
+    if not frame_annotations:
+        raise FileNotFoundError("No valid annotations found in any frame")
+
+    # Consistent object IDs across frames
+    object_name_to_id = {
+        name: idx for idx, name in enumerate(sorted(global_object_names), start=1)
+    }
+
+    multiframe_data = {}
+    for frame_idx, objects in frame_annotations.items():
+        points_dict = {}
+        labels_dict = {}
+        object_names = {}
+
+        for obj_name, points in objects.items():
+            if not points:
+                continue
+            coords = [[p["x"], p["y"]] for p in points]
+            labels = [p["label"] for p in points]
+            if len(coords) != len(labels) or not coords:
+                continue
+
+            obj_id = object_name_to_id[obj_name]
+            object_names[obj_id] = obj_name
+            points_dict[obj_id] = coords
+            labels_dict[obj_id] = labels
+
+        if points_dict:
+            multiframe_data[frame_idx] = (points_dict, labels_dict, object_names)
+
+    if not multiframe_data:
+        raise ValueError("No valid points found in any annotated frame")
+
+    return multiframe_data, object_name_to_id
+
+
 def run_processing(session_id):
     error_log = SESSIONS_DIR / session_id / "processing_error.log"
     debug_log = SESSIONS_DIR / session_id / "processing_debug.log"
@@ -475,6 +591,20 @@ def run_processing(session_id):
     preview_dir = SESSIONS_DIR / session_id / "previews"
     preview_dir.mkdir(parents=True, exist_ok=True)
     preview_path = preview_dir / "latest.jpg"
+
+    # Start resource profiler (samples GPU/CPU/RAM every 2 seconds)
+    profile_output_dir = (
+        Path(session.output_dir) if session.output_dir
+        else Path(session.video_path).parent if session.video_path
+        else SESSIONS_DIR / session_id
+    )
+    profiler = ResourceProfiler(
+        output_dir=profile_output_dir,
+        interval_seconds=2.0,
+        session_id=session_id,
+    )
+    profiler.start()
+    _log_debug("resource profiler started")
 
     def _save_preview(frame):
         try:
@@ -529,6 +659,7 @@ def run_processing(session_id):
     except (TypeError, ValueError):
         process_end_frame = None
     use_mps = bool(config.get("use_mps", False))
+    enable_bidirectional = bool(config.get("enable_bidirectional", False))
     model_key = config.get("model_key") or "auto"
     resolved_model_key = model_key
     model_label = model_key
@@ -540,9 +671,37 @@ def run_processing(session_id):
         % (model_key, reference_frame, batch_size, frame_count)
     )
 
+    multiframe_data = None
+    is_multiframe = False
+
     try:
         _set_status(session_id, "initializing", 0.05, "Loading annotations")
-        points_dict, labels_dict, object_names = _load_reference_annotations(session_id, reference_frame)
+        mf_data, object_name_to_id = _load_multiframe_annotations(session_id)
+
+        # Build global object names registry
+        object_names = {obj_id: obj_name for obj_name, obj_id in object_name_to_id.items()}
+
+        if len(mf_data) == 1:
+            # Single frame — use traditional approach
+            frame_idx = list(mf_data.keys())[0]
+            points_dict, labels_dict, _ = mf_data[frame_idx]
+            reference_frame = frame_idx
+            is_multiframe = False
+            _log_debug(
+                f"single reference frame: frame={reference_frame} objects={len(object_names)} "
+                f"points={sum(len(v) for v in points_dict.values())}"
+            )
+        else:
+            # Multiple frames — use earliest as primary, rest as conditioning
+            sorted_frames = sorted(mf_data.keys())
+            reference_frame = sorted_frames[0]
+            points_dict, labels_dict, _ = mf_data[reference_frame]
+            multiframe_data = mf_data
+            is_multiframe = True
+            _log_debug(
+                f"multiframe mode: frames={sorted_frames} total_objects={len(object_names)} "
+                f"primary_ref={reference_frame}"
+            )
     except Exception as exc:
         _set_status(session_id, "error", 0.05, f"Annotation error: {exc}")
         _log_debug(f"annotation error: {exc}")
@@ -627,6 +786,7 @@ def run_processing(session_id):
             mask_store_dir=str(SESSIONS_DIR / session_id / "mask_cache"),
             process_start_frame=process_start_frame,
             process_end_frame=process_end_frame,
+            enable_bidirectional=enable_bidirectional,
         )
         wrapped = HeadlessProcessor(processor)
     except ImportError as exc:
@@ -679,7 +839,10 @@ def run_processing(session_id):
         if export_elan:
             elan_path = output_dir / f"{video_stem}{suffix}_ELAN_TIMELINE.eaf"
             wrapped.save_elan(session.video_path, str(elan_path), fps=fps)
-            outputs["elan"] = str(elan_path)
+            if elan_path.exists():
+                outputs["elan"] = str(elan_path)
+            else:
+                _log_debug("ELAN file not created (no targets registered?)")
 
         return outputs, output_dir, video_stem
 
@@ -748,7 +911,8 @@ def run_processing(session_id):
 
     try:
         _set_status(session_id, "processing", 0.2, "Processing frames")
-        results = wrapped.process(points_dict, labels_dict, object_names)
+        mf_data = multiframe_data if is_multiframe else None
+        results = wrapped.process(points_dict, labels_dict, object_names, multiframe_data=mf_data)
         if not results:
             _set_status(session_id, "error", 0.6, "Processing failed")
             _log_debug("processing failed: no results")
@@ -848,6 +1012,13 @@ def run_processing(session_id):
             "ram_start": ram_start,
             "ram_end": _get_ram_info(),
         }
+        # Stop profiler early so we can include the path in outputs
+        try:
+            profile_html = profiler.stop()
+            outputs["resource_profile"] = str(profile_html)
+            profiling["resource_profile"] = str(profile_html)
+        except Exception:
+            pass
         updated_config = {**session.config, "outputs": outputs, "profiling": profiling}
         state.update_session(session_id, config=updated_config)
         _start_csv_export(results, outputs, output_dir, video_stem)
@@ -862,6 +1033,12 @@ def run_processing(session_id):
         _log_debug(f"output error: {exc}")
         _log_trace()
     finally:
+        # Stop resource profiler and save results
+        try:
+            profile_html = profiler.stop()
+            _log_debug(f"resource profile saved: {profile_html}")
+        except Exception as prof_exc:
+            _log_debug(f"profiler stop error: {prof_exc}")
         state.clear_thread(session_id)
 
 

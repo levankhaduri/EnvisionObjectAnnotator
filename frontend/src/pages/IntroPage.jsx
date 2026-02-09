@@ -6,7 +6,6 @@ import {
   Grid,
   Column,
   Tile,
-  ClickableTile,
   InlineNotification,
   InlineLoading,
   Accordion,
@@ -22,6 +21,7 @@ import {
   View,
   Video,
   DocumentExport,
+  Analytics,
 } from "@carbon/icons-react";
 
 export default function IntroPage() {
@@ -124,7 +124,7 @@ export default function IntroPage() {
           <Grid>
             {/* Hero section */}
             <Column lg={16} md={8} sm={4}>
-              <div style={{ textAlign: "center", padding: "4rem 0 3rem" }}>
+              <div style={{ textAlign: "center", padding: "3rem 0 2.5rem" }}>
                 <h1
                   style={{
                     fontSize: "2.625rem",
@@ -133,19 +133,17 @@ export default function IntroPage() {
                     lineHeight: 1.2,
                   }}
                 >
-                  Object Tracking & Overlap Detection
+                  Video Object Annotation
                 </h1>
                 <p
                   style={{
                     fontSize: "1.25rem",
                     color: "#525252",
-                    marginBottom: "2rem",
-                    maxWidth: "600px",
+                    maxWidth: "640px",
                     margin: "0 auto 2rem",
                   }}
                 >
-                  Mark objects once, track them across your video, detect
-                  overlaps automatically.
+                  Annotate objects across multiple frames, track them bidirectionally with SAM2, and detect gaze overlaps for behavioral research.
                 </p>
                 <Button
                   size="lg"
@@ -158,46 +156,34 @@ export default function IntroPage() {
             </Column>
 
             {/* Feature cards */}
-            <Column lg={16} md={8} sm={4}>
-              <Grid narrow>
-                <Column lg={5} md={4} sm={4}>
-                  <Tile style={{ textAlign: "center", padding: "1.5rem" }}>
-                    <View size={32} style={{ marginBottom: "1rem" }} />
-                    <h3 style={{ fontSize: "1rem", fontWeight: 600, marginBottom: "0.5rem" }}>
-                      Click to mark objects
-                    </h3>
-                    <p style={{ fontSize: "0.875rem", color: "#525252" }}>
-                      Simple point-based annotation
-                    </p>
-                  </Tile>
-                </Column>
-                <Column lg={5} md={4} sm={4}>
-                  <Tile style={{ textAlign: "center", padding: "1.5rem" }}>
-                    <Video size={32} style={{ marginBottom: "1rem" }} />
-                    <h3 style={{ fontSize: "1rem", fontWeight: 600, marginBottom: "0.5rem" }}>
-                      SAM2 tracks them
-                    </h3>
-                    <p style={{ fontSize: "0.875rem", color: "#525252" }}>
-                      State-of-the-art segmentation
-                    </p>
-                  </Tile>
-                </Column>
-                <Column lg={5} md={4} sm={4}>
-                  <Tile style={{ textAlign: "center", padding: "1.5rem" }}>
-                    <DocumentExport size={32} style={{ marginBottom: "1rem" }} />
-                    <h3 style={{ fontSize: "1rem", fontWeight: 600, marginBottom: "0.5rem" }}>
-                      Export CSV + ELAN
-                    </h3>
-                    <p style={{ fontSize: "0.875rem", color: "#525252" }}>
-                      Ready for analysis
-                    </p>
-                  </Tile>
-                </Column>
-              </Grid>
-            </Column>
+            {[
+              { icon: View, title: "Point-based annotation", desc: "Click to mark objects on one or more reference frames" },
+              { icon: Video, title: "SAM2 tracking", desc: "Forward and backward propagation with multiple model sizes" },
+              { icon: Analytics, title: "Gaze and overlap detection", desc: "Automatic target overlap tracking with ELAN and CSV export" },
+              { icon: DocumentExport, title: "Smart frame suggestion", desc: "Automatically find the sharpest, most informative frames to annotate" },
+            ].map(({ icon: Icon, title, desc }) => (
+              <Column key={title} lg={4} md={4} sm={4}>
+                <Tile style={{
+                  display: "flex",
+                  flexDirection: "column",
+                  alignItems: "center",
+                  textAlign: "center",
+                  padding: "2rem 1.5rem",
+                  height: "100%",
+                }}>
+                  <Icon size={32} style={{ marginBottom: "1rem", color: "#0f62fe" }} />
+                  <h3 style={{ fontSize: "1rem", fontWeight: 600, marginBottom: "0.5rem" }}>
+                    {title}
+                  </h3>
+                  <p style={{ fontSize: "0.875rem", color: "#525252" }}>
+                    {desc}
+                  </p>
+                </Tile>
+              </Column>
+            ))}
 
             {/* Setup & Diagnostics accordion */}
-            <Column lg={10} md={8} sm={4} style={{ margin: "2rem auto 0" }}>
+            <Column lg={{ span: 12, offset: 2 }} md={8} sm={4} style={{ marginTop: "2rem" }}>
               <Accordion>
                 <AccordionItem title="First time? Setup Instructions">
                   <div style={{ padding: "0.5rem 0" }}>

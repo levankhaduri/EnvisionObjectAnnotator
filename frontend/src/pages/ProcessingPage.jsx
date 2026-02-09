@@ -429,7 +429,7 @@ export default function ProcessingPage() {
 
               {/* Fallback if no stats */}
               {!systemStats?.gpu && !systemStats?.ram && !systemStats?.cpu && (
-                <Tile style={{ textAlign: "center", padding: "2rem" }}>
+                <Tile style={{ display: "flex", flexDirection: "column", alignItems: "center", textAlign: "center", padding: "2rem" }}>
                   <Activity size={32} style={{ marginBottom: "0.5rem", color: "#6f6f6f" }} />
                   <p style={{ fontSize: "0.875rem", color: "#6f6f6f" }}>Loading system stats...</p>
                 </Tile>

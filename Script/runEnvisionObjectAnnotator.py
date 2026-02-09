@@ -1180,10 +1180,20 @@ class UltraOptimizedProcessor:
                 # Apply frame offset and convert to time
                 start_frame_corrected = event['start_frame'] + frame_offset
                 end_frame_corrected = event['end_frame'] + frame_offset
-                
+
+                # Skip single-frame events (saccades) - they create zero-duration ELAN annotations
+                if end_frame_corrected <= start_frame_corrected:
+                    continue
+
                 start_time = start_frame_corrected / fps
                 end_time = end_frame_corrected / fps
-                
+                start_ms = int(start_time * 1000)
+                end_ms = int(end_time * 1000)
+
+                # Skip if duration less than ~33ms (one frame at 30fps)
+                if end_ms <= start_ms:
+                    continue
+
                 all_time_points.add(start_time)
                 all_time_points.add(end_time)
         
@@ -1207,15 +1217,25 @@ class UltraOptimizedProcessor:
                 # Apply frame offset and convert to time
                 start_frame_corrected = event['start_frame'] + frame_offset
                 end_frame_corrected = event['end_frame'] + frame_offset
-                
+
+                # Skip single-frame events (saccades) - they create zero-duration ELAN annotations
+                if end_frame_corrected <= start_frame_corrected:
+                    continue
+
                 start_time = start_frame_corrected / fps
                 end_time = end_frame_corrected / fps
                 start_ms = int(start_time * 1000)
                 end_ms = int(end_time * 1000)
-                
-                start_slot = time_slot_refs[start_ms]
-                end_slot = time_slot_refs[end_ms]
-                
+
+                # Skip if duration less than ~33ms (one frame at 30fps)
+                if end_ms <= start_ms:
+                    continue
+
+                start_slot = time_slot_refs.get(start_ms)
+                end_slot = time_slot_refs.get(end_ms)
+                if not start_slot or not end_slot:
+                    continue
+
                 # Create annotation
                 overlapping_objects_str = ", ".join(event['overlapping_objects'])
                 duration_seconds = end_time - start_time

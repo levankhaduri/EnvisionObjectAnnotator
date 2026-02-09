@@ -6,6 +6,7 @@ import {
   submitAnnotation,
   testMask,
   fetchFrameAnnotations,
+  suggestFrames,
 } from "../api.js";
 import {
   Button,
@@ -26,6 +27,7 @@ import {
   StructuredListRow,
   StructuredListCell,
   StructuredListBody,
+  DefinitionTooltip,
 } from "@carbon/react";
 import {
   ArrowLeft,
@@ -50,6 +52,8 @@ import {
   ZoomIn,
   Cursor_1,
   TouchInteraction,
+  Analytics,
+  Checkmark,
 } from "@carbon/icons-react";
 
 export default function AnnotationPage() {
@@ -73,6 +77,10 @@ export default function AnnotationPage() {
   const [markAsTarget, setMarkAsTarget] = useState(false);
   const [targetToggleTouched, setTargetToggleTouched] = useState(false);
   const [loading, setLoading] = useState(true);
+  const [suggestedFrames, setSuggestedFrames] = useState([]);
+  const [showSuggestions, setShowSuggestions] = useState(false);
+  const [selectedSuggestions, setSelectedSuggestions] = useState(new Set());
+  const [loadingSuggestions, setLoadingSuggestions] = useState(false);
   const annotationsCache = useRef(new Map());
   const maskCache = useRef(new Map());
   const imgRef = useRef(null);
@@ -505,6 +513,53 @@ export default function AnnotationPage() {
     setTargetToggleTouched(false);
   }
 
+  // --- Frame suggestion handlers ---
+  async function handleSuggestFrames() {
+    if (suggestedFrames.length > 0) {
+      setShowSuggestions(true);
+      return;
+    }
+    if (!sessionId || frames.length === 0) {
+      setStatus("Load frames before requesting suggestions.");
+      setStatusKind("warning");
+      return;
+    }
+    setLoadingSuggestions(true);
+    setStatus("Analyzing frames for optimal suggestions...");
+    setStatusKind("info");
+    try {
+      const result = await suggestFrames(sessionId, 7, true);
+      setSuggestedFrames(result.suggested_frames || []);
+      setShowSuggestions(true);
+      setSelectedSuggestions(new Set());
+      setStatus(`Found ${result.suggested_frames?.length || 0} optimal frames (${result.method_used})`);
+      setStatusKind("success");
+    } catch (err) {
+      setStatus(err.message);
+      setStatusKind("error");
+      setSuggestedFrames([]);
+    } finally {
+      setLoadingSuggestions(false);
+    }
+  }
+
+  function toggleSuggestionSelection(frameIndex) {
+    setSelectedSuggestions((prev) => {
+      const updated = new Set(prev);
+      if (updated.has(frameIndex)) {
+        updated.delete(frameIndex);
+      } else {
+        updated.add(frameIndex);
+      }
+      return updated;
+    });
+  }
+
+  function navigateToSuggestion(frameIndex) {
+    setCurrentIndex(frameIndex);
+    setShowSuggestions(false);
+  }
+
   const hasSavedObject = Object.entries(savedCounts).some(
     ([name, count]) => count > 0 && (frameObjects[name]?.length || 0) === count
   );
@@ -611,7 +666,7 @@ export default function AnnotationPage() {
                             justifyContent: "center",
                           }}
                         >
-                          <Tile style={{ maxWidth: "280px", textAlign: "center" }}>
+                          <Tile style={{ maxWidth: "280px", display: "flex", flexDirection: "column", alignItems: "center", textAlign: "center" }}>
                             <Cursor_1 size={32} style={{ marginBottom: "0.5rem" }} />
                             <p style={{ fontWeight: 600, marginBottom: "0.5rem" }}>Create an object first</p>
                             <p style={{ fontSize: "0.875rem", color: "#525252" }}>
@@ -622,7 +677,7 @@ export default function AnnotationPage() {
                       )}
                     </>
                   ) : (
-                    <div style={{ padding: "4rem", textAlign: "center", color: "#8d8d8d" }}>
+                    <div style={{ padding: "4rem", display: "flex", flexDirection: "column", alignItems: "center", textAlign: "center", color: "#8d8d8d" }}>
                       {!sessionId ? (
                         <>
                           <WarningAlt size={48} style={{ marginBottom: "1rem", color: "#f1c21b" }} />
@@ -707,6 +762,25 @@ export default function AnnotationPage() {
                   disabled={frames.length === 0}
                   hideTextInput
                 />
+                {loadingSuggestions ? (
+                  <InlineLoading
+                    description="Analyzing frames for optimal suggestions..."
+                    style={{ marginTop: "0.75rem" }}
+                  />
+                ) : (
+                  <Button
+                    kind="tertiary"
+                    size="sm"
+                    renderIcon={Analytics}
+                    onClick={handleSuggestFrames}
+                    disabled={frames.length === 0}
+                    style={{ width: "100%", marginTop: "0.75rem" }}
+                  >
+                    {suggestedFrames.length > 0
+                      ? `View Suggested Frames (${suggestedFrames.length})`
+                      : "Suggest Optimal Frames"}
+                  </Button>
+                )}
               </Tile>
             </Column>
 
@@ -734,7 +808,7 @@ export default function AnnotationPage() {
                 />
                 <Checkbox
                   id="mark-target"
-                  labelText={<span style={{ display: "flex", alignItems: "center", gap: "0.5rem" }}><FlagFilled size={14} /> Mark as target object</span>}
+                  labelText={<span style={{ display: "flex", alignItems: "center", gap: "0.5rem" }}><FlagFilled size={14} /> Mark as <DefinitionTooltip definition="The object you want to detect gaze/overlap against. At least one target is needed for ELAN export and overlap analysis." align="bottom">target object</DefinitionTooltip></span>}
                   checked={markAsTarget}
                   onChange={(_, { checked }) => {
                     setMarkAsTarget(checked);
@@ -742,6 +816,9 @@ export default function AnnotationPage() {
                   }}
                   style={{ marginTop: "0.75rem" }}
                 />
+                <p style={{ fontSize: "0.75rem", color: "#6f6f6f", marginTop: "0.25rem", marginLeft: "1.75rem" }}>
+                  Required for gaze/overlap detection and ELAN export
+                </p>
                 <div style={{ display: "flex", gap: "0.5rem", marginTop: "1rem" }}>
                   <Button kind="secondary" size="sm" onClick={handleAddObject} renderIcon={Add}>
                     Add
@@ -787,6 +864,15 @@ export default function AnnotationPage() {
                     </div>
                   )}
                 </div>
+                {objectList.length > 0 && !objectList.some((n) => isTargetName(n)) && (
+                  <InlineNotification
+                    kind="info"
+                    lowContrast
+                    hideCloseButton
+                    subtitle="Mark at least one object as a target to enable gaze detection and ELAN export."
+                    style={{ marginTop: "0.75rem", minBlockSize: "auto" }}
+                  />
+                )}
               </Tile>
 
               {/* Point mode */}
@@ -903,6 +989,116 @@ export default function AnnotationPage() {
             <p style={{ color: "#6f6f6f" }}>No preview available</p>
           )}
         </div>
+      </Modal>
+
+      {/* Frame suggestion modal */}
+      <Modal
+        open={showSuggestions}
+        onRequestClose={() => setShowSuggestions(false)}
+        modalHeading="Suggested Optimal Frames"
+        passiveModal
+        size="lg"
+      >
+        <p style={{ fontSize: "0.875rem", color: "#525252", marginBottom: "1rem" }}>
+          Select frame(s) to annotate. Higher scores indicate better quality and content.
+        </p>
+        {suggestedFrames.length > 0 ? (
+          <>
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(200px, 1fr))", gap: "1rem" }}>
+              {suggestedFrames.map((frame) => {
+                const isSelected = selectedSuggestions.has(frame.frame_index);
+                const frameName = frames[frame.frame_index];
+                const thumbUrl = frameName
+                  ? `${API_BASE}/frames/thumbs/${sessionId}/${frameName}`
+                  : "";
+
+                return (
+                  <label
+                    key={frame.frame_index}
+                    htmlFor={`suggest-check-${frame.frame_index}`}
+                    style={{
+                      border: `2px solid ${isSelected ? "#0f62fe" : "#e0e0e0"}`,
+                      borderRadius: "4px",
+                      overflow: "hidden",
+                      cursor: "pointer",
+                      backgroundColor: isSelected ? "#e5f6ff" : "#fff",
+                      transition: "all 0.15s ease",
+                      display: "block",
+                    }}
+                  >
+                    <div style={{ padding: "0.75rem", display: "flex", alignItems: "center", gap: "0.75rem" }}>
+                      <Checkbox
+                        id={`suggest-check-${frame.frame_index}`}
+                        checked={isSelected}
+                        onChange={() => toggleSuggestionSelection(frame.frame_index)}
+                        labelText={`Frame ${frame.frame_index + 1}`}
+                        style={{ minWidth: 0 }}
+                      />
+                      <Tag type={frame.method === "dinov2" ? "green" : "blue"} size="sm">
+                        {(frame.score * 100).toFixed(0)}%
+                      </Tag>
+                    </div>
+                    {thumbUrl && (
+                      <img
+                        src={thumbUrl}
+                        alt={`Frame ${frame.frame_index}`}
+                        style={{ width: "100%", height: "120px", objectFit: "cover" }}
+                      />
+                    )}
+                    <div style={{ padding: "0.5rem 0.75rem", fontSize: "0.75rem" }}>
+                      <div style={{ display: "flex", gap: "0.5rem", flexWrap: "wrap" }}>
+                        <span style={{ color: "#525252" }}>Sharpness: <strong>{frame.sharpness.toFixed(1)}</strong></span>
+                        <span style={{ color: "#525252" }}>Brightness: <strong>{(frame.brightness * 100).toFixed(0)}%</strong></span>
+                      </div>
+                    </div>
+                  </label>
+                );
+              })}
+            </div>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginTop: "1.5rem", paddingTop: "1rem", borderTop: "1px solid #e0e0e0" }}>
+              <span style={{ fontSize: "0.875rem", color: "#525252" }}>
+                {selectedSuggestions.size > 0
+                  ? `${selectedSuggestions.size} frame(s) selected`
+                  : "Click frames to select"}
+              </span>
+              <div style={{ display: "flex", gap: "0.5rem" }}>
+                <Button
+                  kind="secondary"
+                  size="sm"
+                  onClick={() => {
+                    if (selectedSuggestions.size > 0) {
+                      navigateToSuggestion(Math.min(...Array.from(selectedSuggestions)));
+                    }
+                  }}
+                  disabled={selectedSuggestions.size === 0}
+                >
+                  Go to Selected
+                </Button>
+                <Button
+                  kind="primary"
+                  size="sm"
+                  renderIcon={Checkmark}
+                  onClick={() => {
+                    if (selectedSuggestions.size > 0) {
+                      const indices = Array.from(selectedSuggestions).sort((a, b) => a - b);
+                      setCurrentIndex(indices[0]);
+                      setShowSuggestions(false);
+                      setStatus(`Ready to annotate ${indices.length} selected frame(s).`);
+                      setStatusKind("success");
+                    }
+                  }}
+                  disabled={selectedSuggestions.size === 0}
+                >
+                  Start Annotating ({selectedSuggestions.size})
+                </Button>
+              </div>
+            </div>
+          </>
+        ) : (
+          <p style={{ color: "#6f6f6f", textAlign: "center", padding: "2rem 0" }}>
+            No frame suggestions available.
+          </p>
+        )}
       </Modal>
     </div>
   );

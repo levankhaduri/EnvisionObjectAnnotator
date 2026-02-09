@@ -39,6 +39,7 @@ import {
   CheckmarkFilled,
   WarningAlt,
   Hourglass,
+  Analytics,
 } from "@carbon/icons-react";
 
 export default function ResultsPage() {
@@ -301,6 +302,43 @@ export default function ResultsPage() {
                       renderIcon={Download}
                       href={outputs.elan ? getResultDownloadUrl(sessionId, "elan") : "#"}
                       disabled={!outputs.elan}
+                    >
+                      Download
+                    </Button>
+                  </div>
+
+                  {/* Resource Profile */}
+                  <div style={{
+                    padding: "1rem",
+                    borderRadius: "4px",
+                    border: "1px solid #e0e0e0",
+                    display: "flex",
+                    alignItems: "center",
+                    justifyContent: "space-between"
+                  }}>
+                    <div style={{ display: "flex", alignItems: "center", gap: "1rem" }}>
+                      <div style={{
+                        width: "40px",
+                        height: "40px",
+                        borderRadius: "8px",
+                        backgroundColor: "#e8daff",
+                        display: "flex",
+                        alignItems: "center",
+                        justifyContent: "center"
+                      }}>
+                        <Analytics size={20} style={{ color: "#8a3ffc" }} />
+                      </div>
+                      <div>
+                        <div style={{ fontWeight: 600 }}>Resource Profile</div>
+                        <div style={{ fontSize: "0.75rem", color: "#6f6f6f" }}>GPU/CPU/RAM usage over time</div>
+                      </div>
+                    </div>
+                    <Button
+                      size="sm"
+                      kind="secondary"
+                      renderIcon={Download}
+                      href={outputs.resource_profile ? getResultDownloadUrl(sessionId, "resource_profile") : "#"}
+                      disabled={!outputs.resource_profile}
                     >
                       Download
                     </Button>

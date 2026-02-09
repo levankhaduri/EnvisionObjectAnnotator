@@ -1,4 +1,4 @@
-import React, { useEffect, useRef, useState } from "react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import {
   createSession,
@@ -31,6 +31,7 @@ import {
   Tag,
   Link as CarbonLink,
   InlineLoading,
+  DefinitionTooltip,
 } from "@carbon/react";
 import {
   ArrowLeft,
@@ -82,6 +83,8 @@ export default function ConfigPage() {
   const [sampleDuration, setSampleDuration] = useState("10");
   const [trimStart, setTrimStart] = useState("");
   const [trimEnd, setTrimEnd] = useState("");
+  const [videoDuration, setVideoDuration] = useState(0);
+  const [videoCurrentTime, setVideoCurrentTime] = useState(0);
   const videoRef = useRef(null);
   const [compressMode, setCompressMode] = useState("auto");
   const [useMps, setUseMps] = useState(false);
@@ -91,6 +94,7 @@ export default function ConfigPage() {
   const [outputDir, setOutputDir] = useState("");
   const [frameStride, setFrameStride] = useState(1);
   const [frameInterpolation, setFrameInterpolation] = useState("nearest");
+  const [enableBidirectional, setEnableBidirectional] = useState(false);
   const [roiEnabled, setRoiEnabled] = useState(false);
   const [roiMargin, setRoiMargin] = useState(0.15);
   const [roiMinSize, setRoiMinSize] = useState(256);
@@ -100,6 +104,8 @@ export default function ConfigPage() {
   const [models, setModels] = useState([
     { key: "auto", label: "Auto (largest available)", available: true },
   ]);
+  const [modelsLoading, setModelsLoading] = useState(true);
+  const [modelsError, setModelsError] = useState(null);
   const [framesReady, setFramesReady] = useState(false);
   const [frameCount, setFrameCount] = useState(0);
   const [videoUploaded, setVideoUploaded] = useState(false);
@@ -109,6 +115,47 @@ export default function ConfigPage() {
   const [sessionStale, setSessionStale] = useState(false);
   const inputRef = useRef(null);
   const navigate = useNavigate();
+
+  // Stable blob URL for video preview (avoids re-creating on every render)
+  const videoPreviewUrl = useMemo(() => {
+    if (!videoFile) return null;
+    return URL.createObjectURL(videoFile);
+  }, [videoFile]);
+
+  useEffect(() => {
+    return () => {
+      if (videoPreviewUrl) URL.revokeObjectURL(videoPreviewUrl);
+    };
+  }, [videoPreviewUrl]);
+
+  // Format seconds as MM:SS.s
+  const formatTime = (seconds) => {
+    if (!seconds || isNaN(seconds)) return "0:00";
+    const mins = Math.floor(seconds / 60);
+    const secs = (seconds % 60).toFixed(1);
+    return `${mins}:${secs.padStart(4, "0")}`;
+  };
+
+  // Set trim start from current video position
+  const setTrimFromVideo = (which) => {
+    if (!videoRef.current) return;
+    const time = videoRef.current.currentTime.toFixed(2);
+    if (which === "start") {
+      setTrimStart(time);
+    } else {
+      setTrimEnd(time);
+    }
+  };
+
+  // Throttled time update to avoid excessive re-renders
+  const lastTimeUpdateRef = useRef(0);
+  const handleTimeUpdate = (e) => {
+    const now = Date.now();
+    if (now - lastTimeUpdateRef.current > 250) {
+      setVideoCurrentTime(e.target.currentTime);
+      lastTimeUpdateRef.current = now;
+    }
+  };
 
   // Speed presets effect
   useEffect(() => {
@@ -180,6 +227,8 @@ export default function ConfigPage() {
 
   // Fetch models
   useEffect(() => {
+    setModelsLoading(true);
+    setModelsError(null);
     fetchModels()
       .then((data) => {
         const apiModels = data.models || [];
@@ -187,8 +236,12 @@ export default function ConfigPage() {
           { key: "auto", label: "Auto (largest available)", available: true },
           ...apiModels,
         ]);
+        setModelsLoading(false);
       })
-      .catch(() => {});
+      .catch((err) => {
+        setModelsError("Could not load models. Is the backend running?");
+        setModelsLoading(false);
+      });
   }, []);
 
   async function handleFileUpload(files) {
@@ -277,6 +330,7 @@ export default function ConfigPage() {
         roi_max_coverage: roiMaxCoverage,
         process_start_frame: toInt(processStartFrame),
         process_end_frame: toInt(processEndFrame),
+        enable_bidirectional: enableBidirectional,
       });
       setStatus("Configuration saved!");
       setStatusType("success");
@@ -448,12 +502,14 @@ export default function ConfigPage() {
                     justifyContent: "center",
                   }}
                 >
-                  {videoFile ? (
+                  {videoPreviewUrl ? (
                     <video
                       ref={videoRef}
-                      src={URL.createObjectURL(videoFile)}
+                      src={videoPreviewUrl}
                       controls
                       style={{ width: "100%", height: "100%", objectFit: "contain" }}
+                      onLoadedMetadata={(e) => setVideoDuration(e.target.duration)}
+                      onTimeUpdate={handleTimeUpdate}
                     />
                   ) : (
                     <div style={{ textAlign: "center", color: "#8d8d8d", padding: "2rem" }}>
@@ -525,28 +581,137 @@ export default function ConfigPage() {
                       Auto-detect grey start
                     </Button>
                   </div>
-                  <Grid narrow>
-                    <Column lg={8} md={4} sm={2}>
-                      <TextInput
-                        id="trim-start"
-                        labelText="Start (seconds)"
-                        placeholder="0"
-                        value={trimStart}
-                        onChange={(e) => setTrimStart(e.target.value)}
-                        size="sm"
-                      />
-                    </Column>
-                    <Column lg={8} md={4} sm={2}>
-                      <TextInput
-                        id="trim-end"
-                        labelText="End (seconds)"
-                        placeholder="end"
-                        value={trimEnd}
-                        onChange={(e) => setTrimEnd(e.target.value)}
-                        size="sm"
-                      />
-                    </Column>
-                  </Grid>
+
+                  {/* Current position indicator */}
+                  <div style={{
+                    padding: "0.75rem",
+                    backgroundColor: "#262626",
+                    borderRadius: "4px",
+                    marginBottom: "1rem",
+                    display: "flex",
+                    alignItems: "center",
+                    justifyContent: "space-between"
+                  }}>
+                    <div style={{ display: "flex", alignItems: "center", gap: "0.5rem" }}>
+                      <Time size={16} style={{ color: "#78a9ff" }} />
+                      <span style={{ color: "#c6c6c6", fontSize: "0.875rem" }}>Current position:</span>
+                    </div>
+                    <span style={{ fontFamily: "monospace", fontSize: "1rem", color: "#fff", fontWeight: 600 }}>
+                      {formatTime(videoCurrentTime)} / {formatTime(videoDuration)}
+                    </span>
+                  </div>
+
+                  {/* Trim range buttons */}
+                  <div style={{ display: "flex", gap: "0.5rem", marginBottom: "1rem" }}>
+                    <Button
+                      kind="secondary"
+                      size="sm"
+                      style={{ flex: 1 }}
+                      onClick={() => setTrimFromVideo("start")}
+                      disabled={!videoFile}
+                    >
+                      <Cut size={14} style={{ marginRight: "0.5rem" }} />
+                      Set Start Here
+                    </Button>
+                    <Button
+                      kind="secondary"
+                      size="sm"
+                      style={{ flex: 1 }}
+                      onClick={() => setTrimFromVideo("end")}
+                      disabled={!videoFile}
+                    >
+                      <Cut size={14} style={{ marginRight: "0.5rem" }} />
+                      Set End Here
+                    </Button>
+                  </div>
+
+                  {/* Current trim range display */}
+                  <div style={{
+                    display: "flex",
+                    gap: "1rem",
+                    padding: "0.75rem",
+                    backgroundColor: "#f4f4f4",
+                    borderRadius: "4px",
+                    alignItems: "center"
+                  }}>
+                    <div style={{ flex: 1 }}>
+                      <div style={{ fontSize: "0.75rem", color: "#6f6f6f", marginBottom: "0.25rem" }}>Start</div>
+                      <div style={{ display: "flex", alignItems: "center", gap: "0.5rem" }}>
+                        <input
+                          type="text"
+                          value={trimStart}
+                          onChange={(e) => setTrimStart(e.target.value)}
+                          placeholder="0"
+                          style={{
+                            width: "80px",
+                            padding: "0.25rem 0.5rem",
+                            border: "1px solid #e0e0e0",
+                            borderRadius: "2px",
+                            fontFamily: "monospace",
+                            fontSize: "0.875rem"
+                          }}
+                        />
+                        <span style={{ fontSize: "0.75rem", color: "#6f6f6f" }}>sec</span>
+                        {trimStart && (
+                          <Button
+                            kind="ghost"
+                            size="sm"
+                            renderIcon={Play}
+                            onClick={() => {
+                              if (videoRef.current) {
+                                videoRef.current.currentTime = parseFloat(trimStart) || 0;
+                              }
+                            }}
+                          >
+                            Jump
+                          </Button>
+                        )}
+                      </div>
+                    </div>
+                    <ArrowRight size={20} style={{ color: "#6f6f6f" }} />
+                    <div style={{ flex: 1 }}>
+                      <div style={{ fontSize: "0.75rem", color: "#6f6f6f", marginBottom: "0.25rem" }}>End</div>
+                      <div style={{ display: "flex", alignItems: "center", gap: "0.5rem" }}>
+                        <input
+                          type="text"
+                          value={trimEnd}
+                          onChange={(e) => setTrimEnd(e.target.value)}
+                          placeholder={videoDuration ? videoDuration.toFixed(1) : "end"}
+                          style={{
+                            width: "80px",
+                            padding: "0.25rem 0.5rem",
+                            border: "1px solid #e0e0e0",
+                            borderRadius: "2px",
+                            fontFamily: "monospace",
+                            fontSize: "0.875rem"
+                          }}
+                        />
+                        <span style={{ fontSize: "0.75rem", color: "#6f6f6f" }}>sec</span>
+                        {trimEnd && (
+                          <Button
+                            kind="ghost"
+                            size="sm"
+                            renderIcon={Play}
+                            onClick={() => {
+                              if (videoRef.current) {
+                                videoRef.current.currentTime = parseFloat(trimEnd) || 0;
+                              }
+                            }}
+                          >
+                            Jump
+                          </Button>
+                        )}
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* Duration info */}
+                  {(trimStart || trimEnd) && (
+                    <div style={{ marginTop: "0.75rem", fontSize: "0.75rem", color: "#6f6f6f", textAlign: "center" }}>
+                      Selected range: {formatTime(parseFloat(trimStart) || 0)} → {formatTime(parseFloat(trimEnd) || videoDuration)}
+                      {" "}({((parseFloat(trimEnd) || videoDuration) - (parseFloat(trimStart) || 0)).toFixed(1)}s)
+                    </div>
+                  )}
                 </Tile>
               )}
 
@@ -569,21 +734,34 @@ export default function ConfigPage() {
                 {/* Model & Detection */}
                 <AccordionItem title={<span style={{ display: "flex", alignItems: "center", gap: "0.5rem" }}><MachineLearning size={16} /> Model & Detection</span>}>
                   <div style={{ display: "flex", flexDirection: "column", gap: "1rem" }}>
-                    <Select
-                      id="model-select"
-                      labelText="Model"
-                      value={modelKey}
-                      onChange={(e) => setModelKey(e.target.value)}
-                    >
-                      {models.map((model) => (
-                        <SelectItem
-                          key={model.key}
-                          value={model.key}
-                          text={model.label + (model.available ? "" : " (missing)")}
-                          disabled={!model.available}
-                        />
-                      ))}
-                    </Select>
+                    {modelsLoading ? (
+                      <InlineLoading description="Loading models..." />
+                    ) : modelsError ? (
+                      <InlineNotification
+                        kind="warning"
+                        title="Models unavailable"
+                        subtitle={modelsError}
+                        lowContrast
+                        hideCloseButton
+                      />
+                    ) : (
+                      <Select
+                        id="model-select"
+                        labelText={<><DefinitionTooltip definition="SAM2 Large is most accurate but uses the most RAM. Tiny and EdgeTAM are faster and lighter — good for long videos or limited hardware." align="bottom">Model</DefinitionTooltip></>}
+                        value={modelKey}
+                        onChange={(e) => setModelKey(e.target.value)}
+                        helperText={`${models.filter(m => m.available).length} models available`}
+                      >
+                        {models.map((model) => (
+                          <SelectItem
+                            key={model.key}
+                            value={model.key}
+                            text={model.label + (model.available ? "" : " (missing)")}
+                            disabled={!model.available}
+                          />
+                        ))}
+                      </Select>
+                    )}
 
                     <div>
                       <label style={{ fontSize: "0.75rem", color: "#525252" }}>
@@ -600,7 +778,7 @@ export default function ConfigPage() {
 
                     <TextInput
                       id="batch-size"
-                      labelText="Batch Size"
+                      labelText={<><DefinitionTooltip definition="Number of frames processed at once. Lower values use less RAM but are slower. Reduce this if you run out of memory." align="bottom">Batch size</DefinitionTooltip></>}
                       value={String(batchSize)}
                       onChange={(e) => setBatchSize(e.target.value)}
                       size="sm"
@@ -648,7 +826,7 @@ export default function ConfigPage() {
 
                     <TextInput
                       id="frame-stride"
-                      labelText="Frame Stride"
+                      labelText={<><DefinitionTooltip definition="Process every Nth frame. A stride of 2 skips every other frame (faster, less precise). Use 1 for full accuracy." align="bottom">Frame stride</DefinitionTooltip></>}
                       value={String(frameStride)}
                       onChange={(e) => {
                         setFrameStride(Number(e.target.value) || 1);
@@ -659,13 +837,28 @@ export default function ConfigPage() {
 
                     <Checkbox
                       id="roi-enabled"
-                      labelText={<span style={{ display: "flex", alignItems: "center", gap: "0.5rem" }}><Crop size={14} /> Enable ROI crop</span>}
+                      labelText={<span style={{ display: "flex", alignItems: "center", gap: "0.5rem" }}><Crop size={14} /> Enable <DefinitionTooltip definition="Region of Interest cropping. Focuses processing on the area around annotated objects, reducing computation on irrelevant parts of the frame." align="bottom">ROI crop</DefinitionTooltip></span>}
                       checked={roiEnabled}
                       onChange={(_, { checked }) => {
                         setRoiEnabled(checked);
                         setSpeedPreset("custom");
                       }}
                     />
+
+                    <Toggle
+                      id="bidirectional"
+                      labelText={<><DefinitionTooltip definition="Tracks objects both forward (toward the end) and backward (toward the beginning) from your annotated frame. Without this, only frames after your reference are processed." align="bottom">Bidirectional propagation</DefinitionTooltip></>}
+                      labelA="Off"
+                      labelB="On"
+                      toggled={enableBidirectional}
+                      onToggle={(checked) => setEnableBidirectional(checked)}
+                      size="sm"
+                    />
+                    {enableBidirectional && (
+                      <p style={{ fontSize: "0.75rem", color: "#525252", marginTop: "-0.5rem" }}>
+                        Tracks objects both forward and backward from the reference frame. Uses ~2x processing time.
+                      </p>
+                    )}
                   </div>
                 </AccordionItem>
 
@@ -706,7 +899,7 @@ export default function ConfigPage() {
                   <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "0.5rem" }}>
                     <TextInput
                       id="tune-target"
-                      labelText="Tune target"
+                      labelText={<><DefinitionTooltip definition="Target GPU memory utilization (0-1). Lower values leave more headroom for stability. Default 0.75 means use up to 75% of GPU memory." align="bottom">Tune target</DefinitionTooltip></>}
                       value={tuningTarget}
                       onChange={(e) => setTuningTarget(e.target.value)}
                       size="sm"
@@ -714,7 +907,7 @@ export default function ConfigPage() {
                     />
                     <TextInput
                       id="reserve-gb"
-                      labelText="Reserve GB"
+                      labelText={<><DefinitionTooltip definition="Amount of RAM (in GB) to keep free for the operating system. Prevents the system from running out of memory during processing." align="bottom">Reserve GB</DefinitionTooltip></>}
                       value={tuningReserveGb}
                       onChange={(e) => setTuningReserveGb(e.target.value)}
                       size="sm"
@@ -722,42 +915,42 @@ export default function ConfigPage() {
                     />
                     <TextInput
                       id="preview-stride"
-                      labelText="Preview stride"
+                      labelText={<><DefinitionTooltip definition="Show a live preview every Nth frame during processing. Higher values reduce overhead but give less frequent visual feedback." align="bottom">Preview stride</DefinitionTooltip></>}
                       value={previewStride}
                       onChange={(e) => setPreviewStride(e.target.value)}
                       size="sm"
                     />
                     <TextInput
                       id="max-cache"
-                      labelText="Max cache"
+                      labelText={<><DefinitionTooltip definition="Maximum number of frames to keep in memory at once. Lower values save RAM but may slow processing. Leave empty for automatic." align="bottom">Max cache</DefinitionTooltip></>}
                       value={maxCacheFrames}
                       onChange={(e) => setMaxCacheFrames(e.target.value)}
                       size="sm"
                     />
                     <TextInput
                       id="chunk-size"
-                      labelText="Chunk size"
+                      labelText={<><DefinitionTooltip definition="Split long videos into chunks of this many frames. Reduces peak memory usage. Auto-enabled for videos over 5000 frames." align="bottom">Chunk size</DefinitionTooltip></>}
                       value={chunkSize}
                       onChange={(e) => setChunkSize(e.target.value)}
                       size="sm"
                     />
                     <TextInput
                       id="start-frame"
-                      labelText="Start frame"
+                      labelText={<><DefinitionTooltip definition="Only process frames starting from this index. Leave empty to start from the annotated reference frame (or frame 0 if bidirectional)." align="bottom">Start frame</DefinitionTooltip></>}
                       value={processStartFrame}
                       onChange={(e) => setProcessStartFrame(e.target.value)}
                       size="sm"
                     />
                     <TextInput
                       id="end-frame"
-                      labelText="End frame"
+                      labelText={<><DefinitionTooltip definition="Stop processing at this frame index. Leave empty to process until the last frame." align="bottom">End frame</DefinitionTooltip></>}
                       value={processEndFrame}
                       onChange={(e) => setProcessEndFrame(e.target.value)}
                       size="sm"
                     />
                     <Select
                       id="compress"
-                      labelText="Compress"
+                      labelText={<><DefinitionTooltip definition="Compress mask data to save RAM. 'Auto' enables compression for long videos. 'On' always compresses. 'Off' keeps full quality masks in memory." align="bottom">Compress</DefinitionTooltip></>}
                       value={compressMode}
                       onChange={(e) => setCompressMode(e.target.value)}
                       size="sm"

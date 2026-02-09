@@ -1,5 +1,15 @@
 export const API_BASE = import.meta.env.VITE_API_BASE || "http://localhost:8000";
 
+// Helper to extract error detail from API responses
+async function getErrorDetail(res, fallback) {
+  try {
+    const data = await res.json();
+    return data.detail || fallback;
+  } catch {
+    return fallback;
+  }
+}
+
 export async function createSession(name) {
   const res = await fetch(`${API_BASE}/sessions`, {
     method: "POST",
@@ -49,11 +59,14 @@ export async function updateConfig(payload) {
   return res.json();
 }
 
-export async function extractFrames(sessionId, quality = 2) {
+export async function extractFrames(sessionId, quality = 2, startTime = null, endTime = null) {
+  const payload = { session_id: sessionId, quality };
+  if (startTime !== null && startTime !== "") payload.start_time = parseFloat(startTime);
+  if (endTime !== null && endTime !== "") payload.end_time = parseFloat(endTime);
   const res = await fetch(`${API_BASE}/frames/extract`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ session_id: sessionId, quality }),
+    body: JSON.stringify(payload),
   });
   if (!res.ok) {
     throw new Error("Failed to extract frames");
@@ -69,6 +82,18 @@ export async function listFrames(sessionId) {
   return res.json();
 }
 
+export async function detectGreyStart(sessionId, maxFrames = 300) {
+  const res = await fetch(`${API_BASE}/frames/detect-grey-start`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ session_id: sessionId, max_frames: maxFrames }),
+  });
+  if (!res.ok) {
+    throw new Error("Failed to detect grey frames");
+  }
+  return res.json();
+}
+
 export async function submitAnnotation(payload) {
   const res = await fetch(`${API_BASE}/annotation/points`, {
     method: "POST",
@@ -76,7 +101,8 @@ export async function submitAnnotation(payload) {
     body: JSON.stringify(payload),
   });
   if (!res.ok) {
-    throw new Error("Failed to save annotation points");
+    const detail = await getErrorDetail(res, "Failed to save annotation points");
+    throw new Error(detail);
   }
   return res.json();
 }
@@ -88,7 +114,8 @@ export async function testMask(payload) {
     body: JSON.stringify(payload),
   });
   if (!res.ok) {
-    throw new Error("Failed to test mask");
+    const detail = await getErrorDetail(res, "Failed to test mask");
+    throw new Error(detail);
   }
   return res.json();
 }
@@ -144,4 +171,22 @@ export async function fetchModels() {
 export function getResultDownloadUrl(sessionId, kind) {
   const params = new URLSearchParams({ kind });
   return `${API_BASE}/results/download/${sessionId}?${params.toString()}`;
+}
+
+export async function runDiagnostics() {
+  const res = await fetch(`${API_BASE}/diagnostics`);
+  if (!res.ok) {
+    throw new Error("Failed to run diagnostics");
+  }
+  return res.json();
+}
+
+export async function suggestFrames(sessionId, topK = 7, useDinov2 = true) {
+  const params = new URLSearchParams({ top_k: topK, use_dinov2: useDinov2 });
+  const res = await fetch(`${API_BASE}/frames/suggest/${sessionId}?${params.toString()}`);
+  if (!res.ok) {
+    const detail = await getErrorDetail(res, "Failed to suggest frames");
+    throw new Error(detail);
+  }
+  return res.json();
 }

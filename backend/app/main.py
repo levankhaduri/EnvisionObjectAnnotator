@@ -9,6 +9,10 @@ import cv2
 import math
 import mimetypes
 
+import numpy as np
+import tempfile
+import shutil
+
 from .schemas import (
     SessionCreate,
     Session,
@@ -20,9 +24,14 @@ from .schemas import (
     FrameExtractionRequest,
     FrameListResponse,
     SampleClipRequest,
+    DetectGreyRequest,
+    DetectGreyResponse,
+    FrameSuggestionResponse,
 )
 from .state import state
 from .processing import start_background_job, test_mask_preview, list_available_models
+from .frame_analysis import suggest_optimal_frames
+from . import interaction_log as ilog
 
 
 def _parse_ffprobe_rate(value):
@@ -89,6 +98,133 @@ def health():
     return {"status": "ok"}
 
 
+@app.get("/sessions/{session_id}/interaction-log")
+def get_interaction_log(session_id: str):
+    """Get the interaction log for a session."""
+    try:
+        state.get_session(session_id)
+    except KeyError:
+        raise HTTPException(status_code=404, detail="Session not found")
+
+    return {"session_id": session_id, "events": ilog.get_session_log(session_id)}
+
+
+@app.get("/diagnostics")
+def diagnostics():
+    """Run system diagnostics to verify setup is correct."""
+    import sys
+    import platform
+
+    results = {
+        "python": {
+            "version": sys.version,
+            "ok": sys.version_info >= (3, 10),
+        },
+        "platform": {
+            "system": platform.system(),
+            "machine": platform.machine(),
+        },
+        "pytorch": {"ok": False, "version": None, "cuda_available": False, "cuda_version": None, "gpu_name": None},
+        "ffmpeg": {"ok": False, "version": None},
+        "models": {"ok": False, "available": [], "count": 0},
+        "disk": {"ok": True, "sessions_dir_exists": False},
+    }
+
+    # Check PyTorch
+    try:
+        import torch
+        results["pytorch"]["version"] = torch.__version__
+        results["pytorch"]["cuda_available"] = torch.cuda.is_available()
+        if torch.cuda.is_available():
+            results["pytorch"]["cuda_version"] = torch.version.cuda
+            results["pytorch"]["gpu_name"] = torch.cuda.get_device_name(0)
+            results["pytorch"]["gpu_memory_gb"] = round(torch.cuda.get_device_properties(0).total_memory / 1024**3, 2)
+        results["pytorch"]["ok"] = True
+    except Exception as e:
+        results["pytorch"]["error"] = str(e)
+
+    # Check ffmpeg
+    try:
+        proc = subprocess.run(["ffmpeg", "-version"], capture_output=True, text=True, timeout=5)
+        if proc.returncode == 0:
+            first_line = proc.stdout.split("\n")[0] if proc.stdout else ""
+            results["ffmpeg"]["version"] = first_line
+            results["ffmpeg"]["ok"] = True
+    except Exception as e:
+        results["ffmpeg"]["error"] = str(e)
+
+    # Check models
+    try:
+        models = list_available_models()
+        available = [m for m in models if m["available"]]
+        results["models"]["available"] = [m["label"] for m in available]
+        results["models"]["count"] = len(available)
+        results["models"]["ok"] = len(available) > 0
+    except Exception as e:
+        results["models"]["error"] = str(e)
+
+    # Check sessions directory
+    results["disk"]["sessions_dir_exists"] = SESSIONS_DIR.exists()
+
+    # Overall status
+    results["all_ok"] = all([
+        results["python"]["ok"],
+        results["pytorch"]["ok"],
+        results["ffmpeg"]["ok"],
+        results["models"]["ok"],
+    ])
+
+    return results
+
+
+@app.get("/system/stats")
+def system_stats():
+    """Get current system resource usage (GPU, CPU, RAM)."""
+    stats = {
+        "gpu": None,
+        "cpu": None,
+        "ram": None,
+    }
+
+    # GPU stats
+    try:
+        import torch
+        if torch.cuda.is_available():
+            allocated = torch.cuda.memory_allocated(0) / 1024**3
+            reserved = torch.cuda.memory_reserved(0) / 1024**3
+            total = torch.cuda.get_device_properties(0).total_memory / 1024**3
+            stats["gpu"] = {
+                "name": torch.cuda.get_device_name(0),
+                "allocated_gb": round(allocated, 2),
+                "reserved_gb": round(reserved, 2),
+                "total_gb": round(total, 2),
+                "used_pct": round((reserved / total) * 100, 1) if total > 0 else 0,
+            }
+    except Exception:
+        pass
+
+    # CPU and RAM stats (requires psutil)
+    try:
+        import psutil
+        stats["cpu"] = {
+            "percent": psutil.cpu_percent(interval=0.1),
+            "cores": psutil.cpu_count(),
+        }
+        mem = psutil.virtual_memory()
+        stats["ram"] = {
+            "used_gb": round(mem.used / 1024**3, 2),
+            "available_gb": round(mem.available / 1024**3, 2),
+            "total_gb": round(mem.total / 1024**3, 2),
+            "used_pct": mem.percent,
+        }
+    except ImportError:
+        pass
+    except Exception:
+        pass
+
+    return stats
+
+
 @app.get("/models")
 def get_models():
     return {"models": list_available_models()}
@@ -99,6 +235,7 @@ def create_session(payload: SessionCreate):
     session_id = str(uuid4())
     session = Session(id=session_id, name=payload.name)
     state.create_session(session)
+    ilog.log_session_created(session_id, payload.name)
     return session
 
 
@@ -122,8 +259,11 @@ def upload_video(session_id: str, file: UploadFile = File(...)):
     dest = session_dir / file.filename
 
     with dest.open("wb") as f:
-        f.write(file.file.read())
+        content = file.file.read()
+        f.write(content)
+        file_size = len(content)
 
+    ilog.log_video_uploaded(session_id, file.filename, file_size)
     return state.update_session(session_id, video_path=str(dest))
 
 
@@ -203,36 +343,37 @@ def extract_frames(payload: FrameExtractionRequest):
     thumbs_dir.mkdir(parents=True, exist_ok=True)
     output_pattern = str(frames_dir / "%05d.jpg")
 
-    cmd = [
-        "ffmpeg",
-        "-y",
-        "-i",
-        session.video_path,
-        "-q:v",
-        str(payload.quality),
-        "-start_number",
-        "0",
-        output_pattern,
-    ]
+    # Build ffmpeg command with optional trim
+    cmd = ["ffmpeg", "-y"]
+    if payload.start_time is not None:
+        cmd.extend(["-ss", str(payload.start_time)])
+    cmd.extend(["-i", session.video_path])
+    if payload.end_time is not None:
+        if payload.start_time is not None:
+            # Use duration instead of end time
+            duration = payload.end_time - payload.start_time
+            cmd.extend(["-t", str(duration)])
+        else:
+            cmd.extend(["-t", str(payload.end_time)])
+    cmd.extend(["-q:v", str(payload.quality), "-start_number", "0", output_pattern])
 
     result = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
     if result.returncode != 0:
         raise HTTPException(status_code=500, detail=result.stderr.strip() or "Frame extraction failed")
 
+    # Thumbnails with same trim
     thumb_pattern = str(thumbs_dir / "%05d.jpg")
-    thumb_cmd = [
-        "ffmpeg",
-        "-y",
-        "-i",
-        session.video_path,
-        "-q:v",
-        "5",
-        "-vf",
-        "scale='min(640,iw)':-1",
-        "-start_number",
-        "0",
-        thumb_pattern,
-    ]
+    thumb_cmd = ["ffmpeg", "-y"]
+    if payload.start_time is not None:
+        thumb_cmd.extend(["-ss", str(payload.start_time)])
+    thumb_cmd.extend(["-i", session.video_path])
+    if payload.end_time is not None:
+        if payload.start_time is not None:
+            duration = payload.end_time - payload.start_time
+            thumb_cmd.extend(["-t", str(duration)])
+        else:
+            thumb_cmd.extend(["-t", str(payload.end_time)])
+    thumb_cmd.extend(["-q:v", "5", "-vf", "scale='min(640,iw)':-1", "-start_number", "0", thumb_pattern])
     thumb_result = subprocess.run(thumb_cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
     if thumb_result.returncode != 0:
         print(f"[thumbs] generation failed: {thumb_result.stderr.strip()}")
@@ -243,7 +384,106 @@ def extract_frames(payload: FrameExtractionRequest):
         updated_config = {**config, "video_fps": float(fps)}
         state.update_session(payload.session_id, config=updated_config)
 
+    frame_count = len(list(frames_dir.glob("*.jpg")))
+    ilog.log_frames_extracted(payload.session_id, frame_count, payload.quality)
+
     return {"status": "ok", "frames_dir": str(frames_dir)}
+
+
+def _is_blank_frame(img: np.ndarray, min_std: float = 15.0, min_unique_ratio: float = 0.01) -> bool:
+    """
+    Check if a frame is blank/grey/uniform.
+
+    A frame is considered blank if:
+    1. Standard deviation across all pixels is very low (uniform color)
+    2. Very few unique intensity values (solid color or near-solid)
+    """
+    # Convert to grayscale for simpler analysis
+    gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+
+    # Check 1: Standard deviation - blank frames have very low std
+    std = np.std(gray)
+    if std < min_std:
+        return True
+
+    # Check 2: Count unique values - blank frames have few unique intensities
+    # Sample for speed (every 4th pixel)
+    sampled = gray[::4, ::4].flatten()
+    unique_count = len(np.unique(sampled))
+    total_sampled = len(sampled)
+    unique_ratio = unique_count / 256.0  # ratio of possible values used
+
+    if unique_ratio < min_unique_ratio:
+        return True
+
+    # Check 3: If 90% of pixels are within 20 intensity levels, it's blank
+    hist, _ = np.histogram(sampled, bins=256, range=(0, 256))
+    sorted_hist = np.sort(hist)[::-1]
+    top_bins_coverage = np.sum(sorted_hist[:20]) / total_sampled
+    if top_bins_coverage > 0.95:
+        return True
+
+    return False
+
+
+@app.post("/frames/detect-grey-start", response_model=DetectGreyResponse)
+def detect_grey_start(payload: DetectGreyRequest):
+    """Scan video for first non-grey/blank frame. Returns timestamp for trim start."""
+    try:
+        session = state.get_session(payload.session_id)
+    except KeyError:
+        raise HTTPException(status_code=404, detail="Session not found")
+
+    if not session.video_path:
+        raise HTTPException(status_code=400, detail="Video not uploaded")
+
+    # Get video FPS for timestamp calculation
+    fps = _probe_video_fps(session.video_path) or 30.0
+
+    # Create temp directory for analysis frames
+    temp_dir = Path(tempfile.mkdtemp(prefix="grey_detect_"))
+    try:
+        # Extract frames at low quality for quick analysis
+        output_pattern = str(temp_dir / "%05d.jpg")
+        cmd = [
+            "ffmpeg", "-y",
+            "-i", session.video_path,
+            "-vframes", str(payload.max_frames),
+            "-q:v", "10",  # low quality is fine for analysis
+            "-vf", "scale=320:-1",  # small size for speed
+            "-start_number", "0",
+            output_pattern
+        ]
+        result = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        if result.returncode != 0:
+            raise HTTPException(status_code=500, detail="Failed to extract frames for analysis")
+
+        # Analyze frames for blankness
+        frame_files = sorted(temp_dir.glob("*.jpg"))
+        first_valid = 0
+
+        for i, frame_path in enumerate(frame_files):
+            img = cv2.imread(str(frame_path))
+            if img is None:
+                continue
+
+            if not _is_blank_frame(img):
+                first_valid = i
+                break
+        else:
+            # All frames are blank, return 0
+            first_valid = 0
+
+        first_valid_time = first_valid / fps
+
+        return DetectGreyResponse(
+            first_valid_frame=first_valid,
+            first_valid_time=round(first_valid_time, 2),
+            frames_scanned=len(frame_files)
+        )
+    finally:
+        # Cleanup temp directory
+        shutil.rmtree(temp_dir, ignore_errors=True)
 
 
 @app.get("/frames/list/{session_id}", response_model=FrameListResponse)
@@ -275,6 +515,38 @@ def list_frames(session_id: str):
         frame_height=frame_height,
         has_thumbnails=has_thumbs,
     )
+
+
+@app.get("/frames/suggest/{session_id}", response_model=FrameSuggestionResponse)
+def suggest_frames(session_id: str, top_k: int = 7, use_dinov2: bool = True):
+    """Suggest optimal frames for annotation based on quality and content."""
+    try:
+        state.get_session(session_id)
+    except KeyError:
+        raise HTTPException(status_code=404, detail="Session not found")
+
+    frames_dir = SESSIONS_DIR / session_id / "frames"
+    if not frames_dir.exists():
+        raise HTTPException(status_code=404, detail="Frames not extracted")
+
+    try:
+        suggested = suggest_optimal_frames(
+            frames_dir=frames_dir,
+            top_k=top_k,
+            use_dinov2=use_dinov2,
+            max_samples=50,
+        )
+
+        return FrameSuggestionResponse(
+            session_id=session_id,
+            suggested_frames=suggested,
+            total_analyzed=len(list(frames_dir.glob("*.jpg"))),
+            method_used=suggested[0]["method"] if suggested else "none",
+        )
+    except Exception as e:
+        raise HTTPException(
+            status_code=500, detail=f"Frame analysis failed: {e}"
+        )
 
 
 @app.get("/frames/{session_id}/{frame_name}")
@@ -336,6 +608,7 @@ def update_config(payload: ConfigUpdate):
 
     config = payload.model_dump(exclude={"session_id"}, exclude_none=True)
     updated_config = {**session.config, **config}
+    ilog.log_config_updated(payload.session_id, config)
     return state.update_session(payload.session_id, config=updated_config, output_dir=payload.output_dir)
 
 
@@ -369,6 +642,14 @@ def add_annotation_points(payload: AnnotationPayload):
         updated_config = {**config, "reference_frame": payload.frame_index}
         state.update_session(payload.session_id, config=updated_config)
 
+    # Log the annotation save
+    ilog.log_points_saved(
+        payload.session_id,
+        payload.frame_index,
+        payload.object_name,
+        [p.model_dump() for p in payload.points],
+    )
+
     return {
         "status": "saved",
         "points": len(payload.points),
@@ -388,6 +669,8 @@ def test_mask(payload: AnnotationPayload):
 
     if not payload.points:
         raise HTTPException(status_code=400, detail="No points provided")
+
+    ilog.log_test_mask(payload.session_id, payload.frame_index, payload.object_name, len(payload.points))
 
     try:
         preview_path = test_mask_preview(
@@ -425,6 +708,19 @@ def start_processing(payload: ProcessingStartRequest):
     if active and active.is_alive():
         raise HTTPException(status_code=400, detail="Processing already running")
 
+    # Count objects from annotations
+    annotations_dir = SESSIONS_DIR / payload.session_id / "annotations"
+    object_count = 0
+    if annotations_dir.exists():
+        for f in annotations_dir.glob("frame_*.json"):
+            try:
+                data = json.loads(f.read_text())
+                object_count = max(object_count, len(data.get("objects", {})))
+            except (json.JSONDecodeError, OSError):
+                pass
+
+    ilog.log_processing_started(payload.session_id, object_count)
+
     status = ProcessingStatus(
         session_id=payload.session_id,
         status="starting",
@@ -441,7 +737,29 @@ def get_processing_status(session_id: str):
     try:
         return state.get_processing(session_id)
     except KeyError:
-        raise HTTPException(status_code=404, detail="Session not found")
+        # Check if session exists and has outputs (completed processing)
+        try:
+            session = state.get_session(session_id)
+            config = session.config or {}
+            outputs = config.get("outputs", {})
+            if outputs:
+                # Session has outputs - processing completed
+                return ProcessingStatus(
+                    session_id=session_id,
+                    status="completed",
+                    progress=1.0,
+                    message="Processing complete",
+                )
+            else:
+                # Session exists but no processing started
+                return ProcessingStatus(
+                    session_id=session_id,
+                    status="idle",
+                    progress=0.0,
+                    message="Ready to process",
+                )
+        except KeyError:
+            raise HTTPException(status_code=404, detail="Session not found")
 
 
 @app.get("/processing/preview/{session_id}")
