@@ -1,4 +1,4 @@
-# Changelog — `feature/carbon-ui-v2`
+# Changelog — `feature/carbon-ui-v2-improvements`
 
 ## What's New
 
@@ -20,12 +20,16 @@
 
 ### Bidirectional Propagation
 - New toggle on Config page: propagate masks both forward and backward from reference frame
+- Works in both standard and **chunked processing modes** — backward chunks are seeded from the reference frame and propagated in reverse
+- Post-processing pass runs overlap analysis on backward frames in chronological order for correct ELAN/CSV output
 - Useful when reference frame is in the middle of the video
 
 ### Processing Improvements
 - **Removed `CUDA_LAUNCH_BLOCKING=1`** — GPU was being severely underutilized due to forced synchronous execution
 - **Resource profiler** — logs GPU/CPU/RAM usage every 2 seconds during processing, generates downloadable HTML chart on Results page
+- **Fixed all-objects save bug** — Process button now saves ALL annotated objects across ALL frames before starting (previously only saved the last-selected object)
 - Fixed ELAN export: file path now validated before storing (no more "File missing on disk" errors)
+- Fixed ELAN/CSV output gaps when using chunked mode with bidirectional propagation
 - Target object nudge: helper text and notification when no objects are marked as targets
 
 ### Video Preview Fix
@@ -36,7 +40,9 @@
 - `setup.ps1` / `setup.sh` — one-command setup (installs frontend + backend deps)
 - `run.ps1` / `run.sh` — one-command launch (starts both servers)
 - `demo.html` — standalone interactive demo with animated cursor walkthrough
-- `backend/tests/` — 53 pytest tests covering schemas, API, frame analysis, multiframe
+- `backend/app/logger.py` — session-specific debug logging (console + file)
+- `backend/app/resource_profiler.py` — time-series GPU/CPU/RAM profiler with HTML chart output
+- `backend/tests/` — **100 pytest tests** covering schemas, API, frame analysis, multiframe, bidirectional propagation, ELAN export, annotation saving, and resource profiler
 
 ---
 
@@ -44,7 +50,7 @@
 
 ```bash
 git fetch origin
-git checkout feature/carbon-ui-v2
+git checkout feature/carbon-ui-v2-improvements
 
 # Windows
 .\setup.ps1
@@ -57,3 +63,10 @@ chmod +x setup.sh run.sh
 ```
 
 Then open http://localhost:5173
+
+### Run tests
+
+```bash
+cd backend
+python -m pytest tests/ -v
+```
