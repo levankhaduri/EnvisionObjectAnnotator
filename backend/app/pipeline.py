@@ -1107,10 +1107,11 @@ class UltraOptimizedProcessor:
                 self._store_frame_results(results, missing, prev_masks)
         return results
 
-    def process_video_with_memory_management(self, points_dict, labels_dict, object_names, debug=True, multiframe_data=None):
+    def process_video_with_memory_management(self, points_dict, labels_dict, object_names, debug=True, multiframe_data=None, progress_callback=None):
         """Process video with ultra memory management and improved overlap detection."""
         last_exc = None
         self.partial_results = {}
+        self._progress_callback = progress_callback
         self._prepare_frame_source(points_dict)
         try:
             if debug:
@@ -1217,6 +1218,7 @@ class UltraOptimizedProcessor:
             range_start = max(start_frame, min(int(range_start), total_frames - 1))
         range_end = max(range_start, min(int(range_end), total_frames - 1))
         total_to_process = max(0, range_end - range_start + 1)
+        self._total_to_process = total_to_process
         if self.process_start_frame is not None or self.process_end_frame is not None:
             self._log(
                 "processing range: start=%s end=%s (local frames)"
@@ -1343,6 +1345,11 @@ class UltraOptimizedProcessor:
 
                     frame_count += 1
                     pbar.update(1)
+                    if self._progress_callback and frame_count % 20 == 0:
+                        try:
+                            self._progress_callback(frame_count, self._total_to_process)
+                        except Exception:
+                            pass
 
                     if frame_count % 25 == 0:
                         ultra_cleanup_memory()
@@ -1502,6 +1509,11 @@ class UltraOptimizedProcessor:
                             del frame_result_raw
                             frame_count += 1
                             pbar.update(1)
+                            if self._progress_callback and frame_count % 20 == 0:
+                                try:
+                                    self._progress_callback(frame_count, self._total_to_process)
+                                except Exception:
+                                    pass
                         except Exception as exc:
                             if debug:
                                 self._log("backward frame error: frame_idx=%s error=%s" % (out_frame_idx, exc))

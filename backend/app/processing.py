@@ -454,13 +454,14 @@ class HeadlessProcessor:
     def __init__(self, processor):
         self._processor = processor
 
-    def process(self, points_dict, labels_dict, object_names, multiframe_data=None):
+    def process(self, points_dict, labels_dict, object_names, multiframe_data=None, progress_callback=None):
         return self._processor.process_video_with_memory_management(
             points_dict,
             labels_dict,
             object_names,
             debug=True,
             multiframe_data=multiframe_data,
+            progress_callback=progress_callback,
         )
 
     def get_partial_results(self):
@@ -949,8 +950,13 @@ def run_processing(session_id):
 
     try:
         _set_status(session_id, "processing", 0.2, "Processing frames")
+
+        def _frame_progress(current, total):
+            pct = 0.2 + 0.65 * (current / max(total, 1))
+            _set_status(session_id, "processing", min(pct, 0.85), f"Processing frames: {current}/{total}")
+
         mf_data = multiframe_data if is_multiframe else None
-        results = wrapped.process(points_dict, labels_dict, object_names, multiframe_data=mf_data)
+        results = wrapped.process(points_dict, labels_dict, object_names, multiframe_data=mf_data, progress_callback=_frame_progress)
         if not results:
             _set_status(session_id, "error", 0.6, "Processing failed")
             _log_debug("processing failed: no results")

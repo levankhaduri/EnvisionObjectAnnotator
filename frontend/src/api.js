@@ -120,6 +120,17 @@ export async function testMask(payload) {
   return res.json();
 }
 
+export async function deleteAnnotationObject(sessionId, objectName) {
+  const res = await fetch(`${API_BASE}/annotation/object/${sessionId}/${encodeURIComponent(objectName)}`, {
+    method: "DELETE",
+  });
+  if (!res.ok) {
+    const detail = await getErrorDetail(res, "Failed to delete object");
+    throw new Error(detail);
+  }
+  return res.json();
+}
+
 export async function fetchFrameAnnotations(sessionId, frameIndex) {
   const res = await fetch(`${API_BASE}/annotation/frames/${sessionId}/${frameIndex}`);
   if (!res.ok) {
@@ -135,7 +146,8 @@ export async function startProcessing(sessionId) {
     body: JSON.stringify({ session_id: sessionId }),
   });
   if (!res.ok) {
-    throw new Error("Failed to start processing");
+    const detail = await getErrorDetail(res, "Failed to start processing");
+    throw new Error(detail);
   }
   return res.json();
 }

@@ -7,6 +7,7 @@ import {
   testMask,
   fetchFrameAnnotations,
   suggestFrames,
+  deleteAnnotationObject,
 } from "../api.js";
 import {
   Button,
@@ -300,6 +301,33 @@ export default function AnnotationPage() {
     updateCache(currentIndex, updated);
     setShowPreview(false);
     setMaskPreviewUrl("");
+  }
+
+  async function handleDeleteObject(name) {
+    if (!sessionId) return;
+    try {
+      await deleteAnnotationObject(sessionId, name);
+      const updated = { ...frameObjects };
+      delete updated[name];
+      setFrameObjects(updated);
+      setObjectList(Object.keys(updated));
+      setSavedCounts((prev) => {
+        const next = { ...prev };
+        delete next[name];
+        return next;
+      });
+      if (selectedObject === name) {
+        const remaining = Object.keys(updated);
+        setSelectedObject(remaining.length > 0 ? remaining[0] : null);
+        setPoints(remaining.length > 0 ? updated[remaining[0]] || [] : []);
+      }
+      updateCache(currentIndex, updated);
+      setStatus(`Deleted object "${name.replace("TARGET:", "")}"`);
+      setStatusKind("success");
+    } catch (err) {
+      setStatus(err.message);
+      setStatusKind("error");
+    }
   }
 
   function undoLastPoint() {
@@ -814,30 +842,12 @@ export default function AnnotationPage() {
                   disabled={frames.length === 0}
                   hideTextInput
                 />
-                {loadingSuggestions ? (
-                  <InlineLoading
-                    description="Analyzing frames for optimal suggestions..."
-                    style={{ marginTop: "0.75rem" }}
-                  />
-                ) : (
-                  <Button
-                    kind="tertiary"
-                    size="sm"
-                    renderIcon={Analytics}
-                    onClick={handleSuggestFrames}
-                    disabled={frames.length === 0}
-                    style={{ width: "100%", marginTop: "0.75rem" }}
-                  >
-                    {suggestedFrames.length > 0
-                      ? `View Suggested Frames (${suggestedFrames.length})`
-                      : "Suggest Optimal Frames"}
-                  </Button>
-                )}
               </Tile>
             </Column>
 
             {/* Right column - Controls */}
             <Column lg={4} md={2} sm={4}>
+              <div style={{ maxHeight: "calc(100vh - 120px)", overflowY: "auto", position: "sticky", top: "60px" }}>
               {/* Objects panel */}
               <Tile style={{ marginBottom: "1rem" }}>
                 <h3 style={{ fontSize: "1rem", fontWeight: 600, marginBottom: "1rem", display: "flex", alignItems: "center", gap: "0.5rem" }}>
@@ -909,7 +919,30 @@ export default function AnnotationPage() {
                               {displayObjectName(name)}
                               {isTargetName(name) && <Tag type="cyan" size="sm">Target</Tag>}
                             </span>
-                            <Tag type="gray" size="sm">{(frameObjects[name] || []).length} pts</Tag>
+                            <div style={{ display: "flex", alignItems: "center", gap: "0.25rem" }}>
+                              <Tag type="gray" size="sm">{(frameObjects[name] || []).length} pts</Tag>
+                              <button
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  handleDeleteObject(name);
+                                }}
+                                title="Delete object"
+                                style={{
+                                  background: "none",
+                                  border: "none",
+                                  cursor: "pointer",
+                                  padding: "2px",
+                                  display: "flex",
+                                  alignItems: "center",
+                                  color: "#da1e28",
+                                  opacity: 0.6,
+                                }}
+                                onMouseEnter={(e) => (e.currentTarget.style.opacity = 1)}
+                                onMouseLeave={(e) => (e.currentTarget.style.opacity = 0.6)}
+                              >
+                                <Close size={16} />
+                              </button>
+                            </div>
                           </div>
                         </div>
                       ))}
@@ -979,6 +1012,28 @@ export default function AnnotationPage() {
                 </div>
               </Tile>
 
+              {/* Suggest Frames */}
+              <Tile style={{ marginBottom: "1rem" }}>
+                {loadingSuggestions ? (
+                  <InlineLoading
+                    description="Analyzing frames for optimal suggestions..."
+                  />
+                ) : (
+                  <Button
+                    kind="tertiary"
+                    size="sm"
+                    renderIcon={Analytics}
+                    onClick={handleSuggestFrames}
+                    disabled={frames.length === 0}
+                    style={{ width: "100%" }}
+                  >
+                    {suggestedFrames.length > 0
+                      ? `View Suggested Frames (${suggestedFrames.length})`
+                      : "Suggest Optimal Frames"}
+                  </Button>
+                )}
+              </Tile>
+
               {/* Keyboard shortcuts */}
               <Tile style={{ marginBottom: "1rem" }}>
                 <h3 style={{ fontSize: "0.875rem", fontWeight: 600, marginBottom: "0.75rem", display: "flex", alignItems: "center", gap: "0.5rem" }}>
@@ -1021,6 +1076,7 @@ export default function AnnotationPage() {
                   </ul>
                 </InlineNotification>
               )}
+              </div>
             </Column>
           </Grid>
         </div>

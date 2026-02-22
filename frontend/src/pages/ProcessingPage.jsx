@@ -92,6 +92,9 @@ export default function ProcessingPage() {
         setMessage(data.message || "");
         if (data.status === "completed") {
           navigate("/results");
+        } else if (data.status === "error") {
+          setStatus("error");
+          setMessage(data.message || "Processing failed");
         }
       } catch (err) {
         errorCount++;
@@ -288,7 +291,7 @@ export default function ProcessingPage() {
                   width: "48px",
                   height: "48px",
                   borderRadius: "50%",
-                  backgroundColor: status === "processing" ? "#e5f6ff" : status === "completed" ? "#defbe6" : "#f4f4f4",
+                  backgroundColor: status === "processing" ? "#e5f6ff" : status === "completed" ? "#defbe6" : status === "error" ? "#fff1f1" : "#f4f4f4",
                   display: "flex",
                   alignItems: "center",
                   justifyContent: "center"
@@ -297,6 +300,8 @@ export default function ProcessingPage() {
                     <InlineLoading style={{ margin: 0 }} />
                   ) : status === "completed" ? (
                     <Checkmark size={24} style={{ color: "#198038" }} />
+                  ) : status === "error" ? (
+                    <ErrorFilled size={24} style={{ color: "#da1e28" }} />
                   ) : (
                     <Hourglass size={24} style={{ color: "#525252" }} />
                   )}
@@ -332,6 +337,22 @@ export default function ProcessingPage() {
                 actions={
                   <Button kind="ghost" size="sm" as={Link} to="/results">
                     Check Results
+                  </Button>
+                }
+              />
+            )}
+
+            {status === "error" && (
+              <InlineNotification
+                kind="error"
+                title="Processing failed"
+                subtitle={message || "An error occurred during processing."}
+                lowContrast
+                hideCloseButton
+                style={{ marginTop: "1rem" }}
+                actions={
+                  <Button kind="ghost" size="sm" as={Link} to="/results">
+                    View Results
                   </Button>
                 }
               />

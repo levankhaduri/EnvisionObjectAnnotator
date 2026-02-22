@@ -94,7 +94,7 @@ export default function ConfigPage() {
   const [outputDir, setOutputDir] = useState("");
   const [frameStride, setFrameStride] = useState(1);
   const [frameInterpolation, setFrameInterpolation] = useState("nearest");
-  const [enableBidirectional, setEnableBidirectional] = useState(false);
+  const [enableBidirectional, setEnableBidirectional] = useState(true);
   const [roiEnabled, setRoiEnabled] = useState(false);
   const [roiMargin, setRoiMargin] = useState(0.15);
   const [roiMinSize, setRoiMinSize] = useState(256);
