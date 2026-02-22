@@ -434,6 +434,58 @@ export default function AnnotationPage() {
     }
   }
 
+  async function handleProcessClick() {
+    // Save ALL objects across ALL annotated frames before navigating to processing
+    if (!sessionId) {
+      navigate("/processing");
+      return;
+    }
+    setBusy(true);
+    setStatus("Saving all annotations...");
+    setStatusKind("info");
+    try {
+      // Collect all frames from the cache
+      const framesToSave = new Map();
+      for (const [key, objects] of annotationsCache.current.entries()) {
+        if (!key.startsWith(`${sessionId}:`)) continue;
+        const frameIdx = parseInt(key.split(":")[1], 10);
+        if (isNaN(frameIdx)) continue;
+        framesToSave.set(frameIdx, objects);
+      }
+      // Also include the current frame's live state
+      if (Object.keys(frameObjects).length > 0) {
+        framesToSave.set(currentIndex, frameObjects);
+      }
+      // Save each object in each frame
+      let totalSaved = 0;
+      for (const [frameIdx, objects] of framesToSave.entries()) {
+        for (const [objName, objPoints] of Object.entries(objects)) {
+          if (!objPoints || objPoints.length === 0) continue;
+          const pointsPayload = objPoints.map(({ x, y, label }) => ({
+            x,
+            y,
+            label: label ?? 1,
+          }));
+          await submitAnnotation({
+            session_id: sessionId,
+            frame_index: frameIdx,
+            object_name: objName,
+            points: pointsPayload,
+          });
+          totalSaved++;
+        }
+      }
+      setStatus(`Saved ${totalSaved} object(s). Starting processing...`);
+      setStatusKind("success");
+      navigate("/processing");
+    } catch (err) {
+      setStatus(`Failed to save annotations: ${err.message}`);
+      setStatusKind("error");
+    } finally {
+      setBusy(false);
+    }
+  }
+
   async function handleTestMask() {
     if (!sessionId) {
       setStatus("No session. Return to Config page to start a new session.");
@@ -607,10 +659,10 @@ export default function AnnotationPage() {
           <Button
             size="sm"
             renderIcon={ArrowRight}
-            onClick={() => navigate("/processing")}
+            onClick={handleProcessClick}
             disabled={busy || missingSteps.length > 0}
           >
-            Process
+            {busy ? "Saving..." : "Process"}
           </Button>
         </div>
       </header>

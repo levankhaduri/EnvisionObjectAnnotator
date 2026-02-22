@@ -1,4 +1,5 @@
 import json
+import shutil
 from pathlib import Path
 import threading
 import torch
@@ -19,11 +20,15 @@ from .state import state
 from .pipeline import (
     setup_device_ultra_optimized,
     configure_torch_ultra_conservative,
+    ultra_cleanup_memory,
     UltraOptimizedProcessor,
     get_video_fps,
     get_gpu_memory_info,
 )
 from .resource_profiler import ResourceProfiler
+from .logger import get_logger, get_session_logger
+
+log = get_logger("processing")
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 REPO_DIR = BASE_DIR.parent
@@ -64,6 +69,7 @@ MODEL_CATALOG = [
 ]
 
 _IMAGE_PREDICTOR_CACHE = {}
+_VIDEO_PREDICTOR_CACHE = None  # (cache_key, predictor, device) or None
 
 
 def list_available_models():
@@ -79,6 +85,36 @@ def list_available_models():
             }
         )
     return models
+
+
+def _evict_video_predictor_cache():
+    """Free the cached video predictor to reclaim GPU memory."""
+    global _VIDEO_PREDICTOR_CACHE
+    if _VIDEO_PREDICTOR_CACHE is not None:
+        log.info("evicting cached video predictor")
+        try:
+            del _VIDEO_PREDICTOR_CACHE
+        except Exception:
+            pass
+        _VIDEO_PREDICTOR_CACHE = None
+    ultra_cleanup_memory()
+
+
+def _evict_image_predictor_cache():
+    """Free all cached image predictors to reclaim GPU memory."""
+    global _IMAGE_PREDICTOR_CACHE
+    if not _IMAGE_PREDICTOR_CACHE:
+        return
+    log.info("evicting %d cached image predictor(s)", len(_IMAGE_PREDICTOR_CACHE))
+    for _, (predictor, _) in list(_IMAGE_PREDICTOR_CACHE.items()):
+        try:
+            if hasattr(predictor, "model"):
+                del predictor.model
+            del predictor
+        except Exception:
+            pass
+    _IMAGE_PREDICTOR_CACHE.clear()
+    ultra_cleanup_memory()
 
 
 def _resolve_model_config(model_key=None):
@@ -106,7 +142,19 @@ def _select_model_entry(model_key=None):
     raise FileNotFoundError("SAM2 checkpoints not found")
 
 
-def _build_predictor(use_mps=False, model_key=None):
+def _build_predictor(use_mps=False, model_key=None, use_cache=True):
+    global _VIDEO_PREDICTOR_CACHE
+    cache_key = (model_key or "auto", bool(use_mps))
+
+    if use_cache and _VIDEO_PREDICTOR_CACHE is not None:
+        cached_key, predictor, device = _VIDEO_PREDICTOR_CACHE
+        if cached_key == cache_key:
+            log.debug("video predictor cache hit: %s", cache_key)
+            return predictor, device
+        # Different model requested — evict the old one
+        _evict_video_predictor_cache()
+
+    log.info("building video predictor: model_key=%s use_mps=%s", model_key, use_mps)
     from sam2.build_sam import build_sam2_video_predictor
 
     configure_torch_ultra_conservative()
@@ -123,6 +171,11 @@ def _build_predictor(use_mps=False, model_key=None):
             predictor.model = predictor.model.to(device=device, dtype=torch.float32)
         except Exception:
             pass
+
+    if use_cache:
+        _VIDEO_PREDICTOR_CACHE = (cache_key, predictor, device)
+        log.info("video predictor cached on %s", device)
+
     return predictor, device
 
 
@@ -313,6 +366,8 @@ def test_mask_preview(session_id, frame_index, object_name, points):
     import tempfile
     import shutil
 
+    slog = get_session_logger(session_id)
+    slog.info("test_mask_preview: frame=%d obj=%s pts=%d", frame_index, object_name, len(points))
     session = state.get_session(session_id)
     frames_dir = SESSIONS_DIR / session_id / "frames"
     if not frames_dir.exists():
@@ -340,19 +395,9 @@ def test_mask_preview(session_id, frame_index, object_name, points):
         temp_frame_path = Path(temp_dir) / "00000.jpg"
         shutil.copy2(frame_path, temp_frame_path)
 
-        from sam2.build_sam import build_sam2_video_predictor
-
-        configure_torch_ultra_conservative()
-        device = setup_device_ultra_optimized()
-        if device.type == "mps" and not use_mps:
-            device = torch.device("cpu")
-
-        entry = _select_model_entry(model_key=model_key)
-        model_cfg, checkpoint = str(entry["config"]), entry["checkpoint"]
+        predictor, device = _build_predictor(use_mps=use_mps, model_key=model_key)
 
         with torch.inference_mode():
-            predictor = build_sam2_video_predictor(model_cfg, str(checkpoint), device=device)
-
             # Initialize state with temp directory (only 1 frame)
             inference_state = predictor.init_state(
                 video_path=temp_dir,
@@ -551,6 +596,7 @@ def _load_multiframe_annotations(session_id):
 
 
 def run_processing(session_id):
+    slog = get_session_logger(session_id)
     error_log = SESSIONS_DIR / session_id / "processing_error.log"
     debug_log = SESSIONS_DIR / session_id / "processing_debug.log"
     started_at = time.perf_counter()
@@ -574,10 +620,12 @@ def run_processing(session_id):
         for line in trace.splitlines():
             _append_log(f"    {line}")
 
+    slog.info("run_processing: starting")
     _log_debug(f"run start: session_id={session_id}")
     try:
         session = state.get_session(session_id)
     except KeyError:
+        slog.error("run_processing: session not found")
         _set_status(session_id, "error", 0.0, "Session not found")
         _log_debug("session not found")
         return
@@ -717,33 +765,23 @@ def run_processing(session_id):
         _set_status(session_id, "initializing", 0.1, "Loading SAM2 model")
         os.environ["HYDRA_FULL_ERROR"] = "1"
 
-        from sam2.build_sam import build_sam2_video_predictor
         import sam2.sam2_video_predictor  # noqa: F401
 
-        configure_torch_ultra_conservative()
-        torch.set_default_dtype(torch.float32)
-        device = setup_device_ultra_optimized()
-        if device.type == "mps" and not use_mps:
-            device = torch.device("cpu")
+        # Evict cached test-mask predictor to free GPU memory for full processing
+        _evict_video_predictor_cache()
 
         try:
             model_entry = _select_model_entry(model_key=model_key)
-            model_cfg, checkpoint = str(model_entry["config"]), model_entry["checkpoint"]
             resolved_model_key = model_entry["key"]
             model_label = model_entry["label"]
         except Exception as exc:
             _set_status(session_id, "error", 0.1, f"Model selection error: {exc}")
             return
 
-        predictor = build_sam2_video_predictor(model_cfg, str(checkpoint), device=device)
-        if hasattr(predictor, "model"):
-            try:
-                predictor.model = predictor.model.to(device=device, dtype=torch.float32)
-            except Exception:
-                pass
+        predictor, device = _build_predictor(use_mps=use_mps, model_key=model_entry["key"], use_cache=False)
         _log_debug(
             "model ready: key=%s label=%s device=%s checkpoint=%s"
-            % (resolved_model_key, model_label, device, checkpoint)
+            % (resolved_model_key, model_label, device, model_entry["checkpoint"])
         )
 
         if auto_tune:
@@ -918,6 +956,7 @@ def run_processing(session_id):
             _log_debug("processing failed: no results")
             return
     except Exception as exc:
+        slog.error("run_processing: failed — %s", exc, exc_info=True)
         error_log.write_text(traceback.format_exc())
         _log_debug(f"processing error: {exc}")
         _log_trace()
@@ -1026,8 +1065,27 @@ def run_processing(session_id):
         if export_csv:
             message = "Video ready. CSV exporting..."
         _set_status(session_id, "completed", 1.0, message)
+        slog.info("run_processing: completed — %d frames", frame_count)
         _log_debug("processing complete")
+
+        try:
+            removed_count = 0
+            if frames_dir.exists():
+                frame_files = list(frames_dir.glob("*.jpg")) + list(frames_dir.glob("*.png"))
+                for f in frame_files:
+                    f.unlink()
+                removed_count = len(frame_files)
+            session_dir = frames_dir.parent
+            for d in session_dir.iterdir():
+                if d.is_dir() and d.name not in ("frames", "thumbs", "mask_cache"):
+                    shutil.rmtree(d, ignore_errors=True)
+            if removed_count:
+                slog.info("run_processing: cleaned up %d frames", removed_count)
+                _log_debug(f"frame cleanup: removed {removed_count} files + temp dirs")
+        except Exception as cleanup_exc:
+            slog.warning("run_processing: frame cleanup failed — %s", cleanup_exc)
     except Exception as exc:
+        slog.error("run_processing: output error — %s", exc, exc_info=True)
         error_log.write_text(traceback.format_exc())
         _set_status(session_id, "error", 0.9, f"Output error: {exc}")
         _log_debug(f"output error: {exc}")
@@ -1039,6 +1097,14 @@ def run_processing(session_id):
             _log_debug(f"resource profile saved: {profile_html}")
         except Exception as prof_exc:
             _log_debug(f"profiler stop error: {prof_exc}")
+        # Free GPU memory so the next session starts clean
+        try:
+            _evict_video_predictor_cache()
+            _evict_image_predictor_cache()
+            slog.info("run_processing: GPU cleanup completed")
+            _log_debug("GPU cleanup completed")
+        except Exception as gpu_exc:
+            slog.warning("run_processing: GPU cleanup failed — %s", gpu_exc)
         state.clear_thread(session_id)
 
 

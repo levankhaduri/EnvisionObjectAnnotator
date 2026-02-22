@@ -189,8 +189,8 @@ class DiskBackedMaskStore:
             mask_path = frame_dir / f"obj_{obj_id}.npz"
             if not mask_path.exists():
                 continue
-            data = np.load(mask_path)
-            results[obj_id] = data["mask"].astype(bool)
+            with np.load(mask_path) as data:
+                results[obj_id] = data["mask"].astype(bool)
         return results
 
     def has_frame(self, frame_idx):
@@ -907,6 +907,34 @@ class UltraOptimizedProcessor:
             json.dump(meta, f)
         return roi_dir
 
+    def _create_chunk_dir(self, chunk_start, chunk_end):
+        """Create a temp directory with hardlinks to only the frames in [chunk_start, chunk_end]."""
+        chunks_root = f"{self.video_dir}_chunks"
+        os.makedirs(chunks_root, exist_ok=True)
+        chunk_dir = os.path.join(chunks_root, f"chunk_{chunk_start}_{chunk_end}")
+        os.makedirs(chunk_dir, exist_ok=True)
+        for local_idx, src_idx in enumerate(range(chunk_start, chunk_end + 1)):
+            src_name = self.frame_names[src_idx]
+            src_path = os.path.join(self.video_dir, src_name)
+            ext = os.path.splitext(src_name)[-1]
+            dst_path = os.path.join(chunk_dir, f"{local_idx:05d}{ext}")
+            if os.path.exists(dst_path):
+                continue
+            try:
+                os.link(src_path, dst_path)
+            except Exception:
+                shutil.copy2(src_path, dst_path)
+        return chunk_dir
+
+    def _cleanup_chunk_dirs(self):
+        """Remove all chunk temp directories."""
+        chunks_root = f"{self.video_dir}_chunks"
+        if os.path.isdir(chunks_root):
+            try:
+                shutil.rmtree(chunks_root)
+            except Exception:
+                pass
+
     def _prepare_frame_source(self, points_dict):
         if self._prepared:
             return
@@ -1149,28 +1177,6 @@ class UltraOptimizedProcessor:
         if max_cache_frames is None:
             max_cache_frames = 8 if estimated_bytes > max_preload_bytes else None
         async_loading_frames = max_cache_frames is None
-        inference_state = self.predictor.init_state(
-            video_path=self.video_dir,
-            offload_video_to_cpu=self.offload_video_to_cpu,
-            offload_state_to_cpu=self.offload_state_to_cpu,
-            async_loading_frames=async_loading_frames,
-        )
-
-        self.predictor.reset_state(inference_state)
-        ultra_cleanup_memory()
-        if debug:
-            self._log(
-                "init_state: num_frames=%s video_size=%sx%s image_size=%s async_loading_frames=%s max_cache_frames=%s estimated_video_gb=%.2f"
-                % (
-                    inference_state.get("num_frames"),
-                    inference_state.get("video_width"),
-                    inference_state.get("video_height"),
-                    image_size,
-                    async_loading_frames,
-                    max_cache_frames,
-                    estimated_bytes / (1024**3),
-                )
-            )
 
         self.object_names = object_names
         targets_found = False
@@ -1216,6 +1222,8 @@ class UltraOptimizedProcessor:
                 "processing range: start=%s end=%s (local frames)"
                 % (range_start, range_end)
             )
+
+        # --- Compute chunk_size BEFORE init_state to avoid OOM ---
         chunk_size = None
         if self.chunk_size is not None:
             try:
@@ -1232,11 +1240,50 @@ class UltraOptimizedProcessor:
         except (TypeError, ValueError):
             chunk_overlap = 1
 
+        # Auto-force-chunking: if loading all frames would exceed available RAM
+        if chunk_size is None:
+            sys_mem = get_system_memory_info()
+            available_bytes = (sys_mem["available_gb"] * 1024**3) if sys_mem else None
+            if available_bytes and estimated_bytes > available_bytes * 0.8:
+                safe_frames = max(100, int((available_bytes * 0.5) / bytes_per_frame))
+                chunk_size = min(safe_frames, 1000)
+                self._log(
+                    "auto-chunking: estimated_gb=%.2f available_gb=%.2f chunk_size=%d"
+                    % (estimated_bytes / 1024**3, available_bytes / 1024**3, chunk_size)
+                )
+
+        # Only call init_state for the non-chunked path (safe: fewer frames)
+        inference_state = None
+        if chunk_size is None:
+            inference_state = self.predictor.init_state(
+                video_path=self.video_dir,
+                offload_video_to_cpu=self.offload_video_to_cpu,
+                offload_state_to_cpu=self.offload_state_to_cpu,
+                async_loading_frames=async_loading_frames,
+            )
+            self.predictor.reset_state(inference_state)
+            ultra_cleanup_memory()
+            if debug:
+                self._log(
+                    "init_state: num_frames=%s video_size=%sx%s image_size=%s async_loading_frames=%s max_cache_frames=%s estimated_video_gb=%.2f"
+                    % (
+                        inference_state.get("num_frames"),
+                        inference_state.get("video_width"),
+                        inference_state.get("video_height"),
+                        image_size,
+                        async_loading_frames,
+                        max_cache_frames,
+                        estimated_bytes / (1024**3),
+                    )
+                )
+
         def _process_frames(
             inference_state,
             start_frame_idx,
             max_frame_num_to_track,
             skip_until,
+            frame_offset=0,
+            reverse=False,
         ):
             nonlocal frame_count, last_memory_check, overlap_count
             last_masks = {}
@@ -1245,11 +1292,15 @@ class UltraOptimizedProcessor:
                 inference_state,
                 start_frame_idx=start_frame_idx,
                 max_frame_num_to_track=max_frame_num_to_track,
+                reverse=reverse,
             ):
-                if out_frame_idx < skip_until:
+                if not reverse and out_frame_idx < skip_until:
                     continue
                 try:
-                    global_frame_idx = self._map_frame_idx(out_frame_idx)
+                    actual_idx = out_frame_idx + frame_offset
+                    global_frame_idx = self._map_frame_idx(actual_idx)
+                    if reverse and global_frame_idx in results:
+                        continue
                     if frame_count - last_memory_check >= 50:
                         gpu_info = get_gpu_memory_info()
                         if gpu_info and gpu_info["utilization_pct"] > 90:
@@ -1270,21 +1321,25 @@ class UltraOptimizedProcessor:
                         last_masks[out_obj_id] = mask.copy()
                         del mask
 
-                    if self._disk_store_active:
-                        self._store_frame_results(results, global_frame_idx, frame_results)
-                    else:
-                        self._store_frame_results(results, global_frame_idx, frame_results)
+                    self._store_frame_results(results, global_frame_idx, frame_results)
 
-                    if targets_found:
+                    if targets_found and not reverse:
                         frame_analysis = self.overlap_tracker.track_frame_overlaps_batch(
                             global_frame_idx, frame_results, object_names
                         )
-                        self._maybe_emit_preview(out_frame_idx, frame_results, frame_analysis)
+                        self._maybe_emit_preview(actual_idx, frame_results, frame_analysis)
                         frame_analyses[global_frame_idx] = frame_analysis
                         if frame_analysis.get("target_overlaps"):
                             overlap_count += 1
                     else:
-                        self._maybe_emit_preview(out_frame_idx, frame_results, None)
+                        # For backward frames: analyze overlaps for preview only
+                        # (no event tracking — that happens in post-processing pass)
+                        bwd_analysis = None
+                        if targets_found and reverse:
+                            bwd_analysis = self.overlap_tracker.analyze_frame_overlaps(
+                                frame_results, object_names
+                            )
+                        self._maybe_emit_preview(actual_idx, frame_results, bwd_analysis)
 
                     frame_count += 1
                     pbar.update(1)
@@ -1292,21 +1347,21 @@ class UltraOptimizedProcessor:
                     if frame_count % 25 == 0:
                         ultra_cleanup_memory()
 
-                    last_processed = out_frame_idx
+                    last_processed = out_frame_idx + frame_offset
                     del out_mask_logits, frame_results
                 except Exception as exc:
                     if debug:
                         self._log(
                             "frame error: frame_idx=%s obj_ids=%s mask_logits=%s error=%s"
                             % (
-                                out_frame_idx,
+                                out_frame_idx + frame_offset,
                                 list(out_obj_ids) if out_obj_ids is not None else None,
                                 _format_tensor_info(out_mask_logits),
                                 exc,
                             )
                         )
                         self._log(traceback.format_exc())
-                    print(f"  Error processing frame {out_frame_idx}: {exc}")
+                    print(f"  Error processing frame {out_frame_idx + frame_offset}: {exc}")
                     pbar.update(1)
                     ultra_cleanup_memory()
                     continue
@@ -1425,15 +1480,26 @@ class UltraOptimizedProcessor:
                             global_frame_idx = self._map_frame_idx(out_frame_idx)
                             if global_frame_idx in results:
                                 continue  # Don't overwrite forward results
+                            frame_result_raw = {}
                             frame_result = {}
                             for idx_in_batch, obj_id in enumerate(out_obj_ids):
                                 mask = (out_mask_logits[idx_in_batch] > 0.0).cpu().numpy().astype(np.uint8)
                                 if mask.ndim == 3:
                                     mask = mask[0]
+                                frame_result_raw[int(obj_id)] = mask
                                 if self.compress_masks:
-                                    mask = self._compress_mask(mask)
-                                frame_result[int(obj_id)] = mask
+                                    frame_result[int(obj_id)] = self._compress_mask(mask)
+                                else:
+                                    frame_result[int(obj_id)] = mask
                             self._store_frame_results(results, global_frame_idx, frame_result)
+                            # Preview with overlap analysis (no event tracking)
+                            bwd_analysis = None
+                            if targets_found:
+                                bwd_analysis = self.overlap_tracker.analyze_frame_overlaps(
+                                    frame_result_raw, object_names
+                                )
+                            self._maybe_emit_preview(out_frame_idx, frame_result_raw, bwd_analysis)
+                            del frame_result_raw
                             frame_count += 1
                             pbar.update(1)
                         except Exception as exc:
@@ -1445,92 +1511,277 @@ class UltraOptimizedProcessor:
                         self._log("bidirectional: backward propagation complete")
             else:
                 if debug:
-                    self._log("chunking enabled: chunk_size=%s chunk_overlap=%s" % (chunk_size, chunk_overlap))
+                    self._log("chunked mode: chunk_size=%s chunk_overlap=%s total_frames=%s" % (chunk_size, chunk_overlap, total_frames))
                 next_start = range_start
                 seed_masks = None
                 chunk_index = 0
-                while next_start <= range_end:
-                    if chunk_index > 0:
-                        inference_state = self.predictor.init_state(
-                            video_path=self.video_dir,
+                try:
+                    while next_start <= range_end:
+                        seed_frame = start_frame if chunk_index == 0 else max(start_frame, next_start - chunk_overlap)
+                        remaining = range_end - next_start + 1
+                        desired_new = min(chunk_size, remaining)
+                        if chunk_index == 0:
+                            max_track = max(0, desired_new - 1)
+                        else:
+                            max_track = max(0, desired_new + chunk_overlap - 1)
+                        skip_needed = max(0, next_start - seed_frame)
+                        max_track = max(max_track, skip_needed)
+                        max_track = min(max_track, max(0, range_end - seed_frame))
+                        chunk_end = min(seed_frame + max_track, len(self.frame_names) - 1)
+
+                        # Create a temp dir with only this chunk's frames
+                        chunk_dir = self._create_chunk_dir(seed_frame, chunk_end)
+                        if debug:
+                            self._log("chunk %d: frames %d-%d (%d frames) dir=%s" % (
+                                chunk_index, seed_frame, chunk_end, chunk_end - seed_frame + 1, chunk_dir))
+
+                        chunk_inference_state = self.predictor.init_state(
+                            video_path=chunk_dir,
                             offload_video_to_cpu=self.offload_video_to_cpu,
                             offload_state_to_cpu=self.offload_state_to_cpu,
                             async_loading_frames=async_loading_frames,
                         )
-                        self.predictor.reset_state(inference_state)
+                        self.predictor.reset_state(chunk_inference_state)
                         ultra_cleanup_memory()
-                    seed_frame = start_frame if chunk_index == 0 else max(start_frame, next_start - chunk_overlap)
-                    if chunk_index == 0:
-                        for obj_id in points_dict:
-                            try:
-                                points = np.array(points_dict[obj_id], dtype=np.float32)
-                                labels = np.array(labels_dict[obj_id], dtype=np.int32)
-                                _, out_obj_ids, out_mask_logits = self.predictor.add_new_points_or_box(
-                                    inference_state=inference_state,
-                                    frame_idx=seed_frame,
-                                    obj_id=obj_id,
-                                    points=points,
-                                    labels=labels,
-                                )
-                                del out_mask_logits, points, labels
-                                ultra_cleanup_memory()
-                            except Exception as exc:
-                                if debug:
-                                    self._log(
-                                        "add prompts failed: obj_id=%s points=%s labels=%s error=%s"
-                                        % (
-                                            obj_id,
-                                            _format_points_info(points_dict.get(obj_id)),
-                                            _format_tensor_info(labels_dict.get(obj_id)),
-                                            exc,
-                                        )
+
+                        # Convert global seed_frame to local index within chunk
+                        local_seed = seed_frame - seed_frame  # always 0
+                        local_skip = max(0, next_start - seed_frame)
+
+                        if chunk_index == 0:
+                            for obj_id in points_dict:
+                                try:
+                                    points = np.array(points_dict[obj_id], dtype=np.float32)
+                                    labels = np.array(labels_dict[obj_id], dtype=np.int32)
+                                    _, out_obj_ids, out_mask_logits = self.predictor.add_new_points_or_box(
+                                        inference_state=chunk_inference_state,
+                                        frame_idx=local_seed,
+                                        obj_id=obj_id,
+                                        points=points,
+                                        labels=labels,
                                     )
-                                    self._log(traceback.format_exc())
-                                print(f"  Error adding prompts for object {obj_id}: {exc}")
-                                continue
-                    else:
-                        for obj_id, mask in (seed_masks or {}).items():
-                            if mask is None:
-                                continue
-                            try:
-                                self.predictor.add_new_mask(
-                                    inference_state=inference_state,
-                                    frame_idx=seed_frame,
-                                    obj_id=obj_id,
-                                    mask=mask,
+                                    del out_mask_logits, points, labels
+                                    ultra_cleanup_memory()
+                                except Exception as exc:
+                                    if debug:
+                                        self._log(
+                                            "add prompts failed: obj_id=%s points=%s labels=%s error=%s"
+                                            % (
+                                                obj_id,
+                                                _format_points_info(points_dict.get(obj_id)),
+                                                _format_tensor_info(labels_dict.get(obj_id)),
+                                                exc,
+                                            )
+                                        )
+                                        self._log(traceback.format_exc())
+                                    print(f"  Error adding prompts for object {obj_id}: {exc}")
+                                    continue
+                        else:
+                            for obj_id, mask in (seed_masks or {}).items():
+                                if mask is None:
+                                    continue
+                                try:
+                                    self.predictor.add_new_mask(
+                                        inference_state=chunk_inference_state,
+                                        frame_idx=local_seed,
+                                        obj_id=obj_id,
+                                        mask=mask,
+                                    )
+                                except Exception as exc:
+                                    if debug:
+                                        self._log("seed mask failed: obj_id=%s error=%s" % (obj_id, exc))
+                                        self._log(traceback.format_exc())
+                                    continue
+
+                        local_max_track = chunk_end - seed_frame
+                        last_processed, seed_masks = _process_frames(
+                            chunk_inference_state,
+                            local_seed,
+                            local_max_track,
+                            local_skip,
+                            frame_offset=seed_frame,
+                        )
+                        self.predictor.reset_state(chunk_inference_state)
+                        ultra_cleanup_memory()
+
+                        # Clean up this chunk dir immediately to save disk space
+                        try:
+                            shutil.rmtree(chunk_dir)
+                        except Exception:
+                            pass
+
+                        if last_processed is None:
+                            break
+                        next_start = last_processed + 1
+                        chunk_index += 1
+                finally:
+                    self._cleanup_chunk_dirs()
+
+                # Backward chunked propagation (bidirectional)
+                if self.enable_bidirectional and start_frame > range_start:
+                    if debug:
+                        self._log(
+                            "chunked bidirectional: backward from frame %s to %s"
+                            % (start_frame, range_start)
+                        )
+                    next_end = start_frame
+                    seed_masks_bwd = None
+                    bwd_chunk_idx = 0
+                    try:
+                        while next_end >= range_start:
+                            if bwd_chunk_idx == 0:
+                                # First backward chunk: seed at reference frame
+                                seed_frame_bwd = start_frame
+                            else:
+                                # Subsequent: overlap into previous chunk
+                                seed_frame_bwd = min(
+                                    next_end + chunk_overlap, start_frame
                                 )
-                            except Exception as exc:
-                                if debug:
-                                    self._log("seed mask failed: obj_id=%s error=%s" % (obj_id, exc))
-                                    self._log(traceback.format_exc())
-                                continue
+                            chunk_start_bwd = max(
+                                range_start, seed_frame_bwd - chunk_size + 1
+                            )
+                            chunk_end_bwd = seed_frame_bwd
 
-                    remaining = range_end - next_start + 1
-                    desired_new = min(chunk_size, remaining)
-                    if chunk_index == 0:
-                        max_track = max(0, desired_new - 1)
-                    else:
-                        max_track = max(0, desired_new + chunk_overlap - 1)
-                    skip_needed = max(0, next_start - seed_frame)
-                    max_track = max(max_track, skip_needed)
-                    max_track = min(max_track, max(0, range_end - seed_frame))
+                            chunk_dir = self._create_chunk_dir(
+                                chunk_start_bwd, chunk_end_bwd
+                            )
+                            if debug:
+                                self._log(
+                                    "backward chunk %d: frames %d-%d (%d frames) dir=%s"
+                                    % (
+                                        bwd_chunk_idx,
+                                        chunk_start_bwd,
+                                        chunk_end_bwd,
+                                        chunk_end_bwd - chunk_start_bwd + 1,
+                                        chunk_dir,
+                                    )
+                                )
 
-                    last_processed, seed_masks = _process_frames(
-                        inference_state,
-                        seed_frame,
-                        max_track,
-                        next_start,
-                    )
-                    self.predictor.reset_state(inference_state)
-                    ultra_cleanup_memory()
-                    if last_processed is None:
-                        break
-                    next_start = last_processed + 1
-                    chunk_index += 1
+                            chunk_inference_state = self.predictor.init_state(
+                                video_path=chunk_dir,
+                                offload_video_to_cpu=self.offload_video_to_cpu,
+                                offload_state_to_cpu=self.offload_state_to_cpu,
+                                async_loading_frames=async_loading_frames,
+                            )
+                            self.predictor.reset_state(chunk_inference_state)
+                            ultra_cleanup_memory()
+
+                            # Local index of seed (at end of chunk)
+                            local_seed_bwd = chunk_end_bwd - chunk_start_bwd
+
+                            if bwd_chunk_idx == 0:
+                                # First chunk: add user prompts at reference frame
+                                for obj_id in points_dict:
+                                    try:
+                                        points = np.array(
+                                            points_dict[obj_id], dtype=np.float32
+                                        )
+                                        labels = np.array(
+                                            labels_dict[obj_id], dtype=np.int32
+                                        )
+                                        _, _, out_mask_logits = (
+                                            self.predictor.add_new_points_or_box(
+                                                inference_state=chunk_inference_state,
+                                                frame_idx=local_seed_bwd,
+                                                obj_id=obj_id,
+                                                points=points,
+                                                labels=labels,
+                                            )
+                                        )
+                                        del out_mask_logits, points, labels
+                                        ultra_cleanup_memory()
+                                    except Exception as exc:
+                                        if debug:
+                                            self._log(
+                                                "backward add prompts failed: obj_id=%s error=%s"
+                                                % (obj_id, exc)
+                                            )
+                                        continue
+                            else:
+                                # Subsequent chunks: seed with masks from previous chunk
+                                for obj_id, mask in (seed_masks_bwd or {}).items():
+                                    if mask is None:
+                                        continue
+                                    try:
+                                        self.predictor.add_new_mask(
+                                            inference_state=chunk_inference_state,
+                                            frame_idx=local_seed_bwd,
+                                            obj_id=obj_id,
+                                            mask=mask,
+                                        )
+                                    except Exception as exc:
+                                        if debug:
+                                            self._log(
+                                                "backward seed mask failed: obj_id=%s error=%s"
+                                                % (obj_id, exc)
+                                            )
+                                        continue
+
+                            local_max_track_bwd = local_seed_bwd
+                            last_processed_bwd, seed_masks_bwd = _process_frames(
+                                chunk_inference_state,
+                                local_seed_bwd,
+                                local_max_track_bwd,
+                                0,
+                                frame_offset=chunk_start_bwd,
+                                reverse=True,
+                            )
+                            self.predictor.reset_state(chunk_inference_state)
+                            ultra_cleanup_memory()
+
+                            try:
+                                shutil.rmtree(chunk_dir)
+                            except Exception:
+                                pass
+
+                            if last_processed_bwd is None:
+                                break
+                            next_end = last_processed_bwd - 1
+                            bwd_chunk_idx += 1
+                    finally:
+                        self._cleanup_chunk_dirs()
+                    if debug:
+                        self._log(
+                            "chunked bidirectional: backward propagation complete"
+                        )
 
         if targets_found:
             last_frame = max(results.keys()) if results else 0
             self.overlap_tracker.finalize_tracking(last_frame)
+
+            # Post-process backward frames for overlap tracking
+            # Backward propagation skips overlap tracking (frames arrive in
+            # reverse order which corrupts the event tracker).  We run it here
+            # in chronological order so ELAN/CSV get correct overlap data.
+            if self.enable_bidirectional and start_frame > range_start:
+                ref_global = self._map_frame_idx(start_frame)
+                backward_indices = sorted(
+                    idx for idx in results.keys()
+                    if idx < ref_global and idx not in frame_analyses
+                )
+                if backward_indices:
+                    if debug:
+                        self._log(
+                            "backward overlap pass: %d frames" % len(backward_indices)
+                        )
+                    for bwd_idx in backward_indices:
+                        bwd_frame_results = self._get_frame_results(results, bwd_idx)
+                        if not bwd_frame_results:
+                            continue
+                        decompressed = {}
+                        for obj_id, mask in bwd_frame_results.items():
+                            m = self._decompress_mask(mask)
+                            if m is not None:
+                                decompressed[obj_id] = m
+                        if decompressed:
+                            frame_analysis = (
+                                self.overlap_tracker.track_frame_overlaps_batch(
+                                    bwd_idx, decompressed, object_names
+                                )
+                            )
+                            frame_analyses[bwd_idx] = frame_analysis
+                    # Finalize any open backward events
+                    self.overlap_tracker.finalize_tracking(backward_indices[0])
 
         results = self._fill_missing_frames(results)
         self.frame_analyses = frame_analyses
@@ -1706,6 +1957,7 @@ class UltraOptimizedProcessor:
                             continue
 
                     if mask.shape == (height, width):
+                        mask = mask.astype(bool)
                         obj_info = looking_at_info.get(obj_id, {})
                         is_target = obj_info.get("is_target", False)
                         is_being_looked_at = obj_info.get("is_being_looked_at", False)
@@ -1926,7 +2178,7 @@ class UltraOptimizedProcessor:
 
         all_time_points = set()
         for target_name, target_data in summary.items():
-            for event in target_data["events"]:
+            for event in sorted(target_data["events"], key=lambda e: e["start_frame"]):
                 start_frame_corrected = event["start_frame"] + frame_offset
                 end_frame_corrected = event["end_frame"] + frame_offset
 
@@ -1951,7 +2203,7 @@ class UltraOptimizedProcessor:
             tier_id = target_name.upper().replace(" ", "_").replace("-", "_")
             tier_content += f'    <TIER DEFAULT_LOCALE="en" LINGUISTIC_TYPE_REF="default" TIER_ID="{tier_id}_LOOKING_AT">\n'
 
-            for event in target_data["events"]:
+            for event in sorted(target_data["events"], key=lambda e: e["start_frame"]):
                 start_frame_corrected = event["start_frame"] + frame_offset
                 end_frame_corrected = event["end_frame"] + frame_offset
 
