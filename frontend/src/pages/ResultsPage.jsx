@@ -44,7 +44,7 @@ import {
 
 export default function ResultsPage() {
   const [sessionId, setSessionId] = useState("");
-  const [outputs, setOutputs] = useState({});
+  const [fileExists, setFileExists] = useState({});
   const [outputsMeta, setOutputsMeta] = useState({});
   const [profiling, setProfiling] = useState(null);
   const [status, setStatus] = useState("Loading results...");
@@ -60,7 +60,7 @@ export default function ResultsPage() {
   const csvStatus = outputsMeta?.csv_status;
   const csvProgress = outputsMeta?.csv_progress;
   const csvError = outputsMeta?.csv_error;
-  const csvPending = !outputs.csv && (csvStatus === "pending" || csvStatus === "running");
+  const csvPending = !fileExists.csv && (csvStatus === "pending" || csvStatus === "running");
 
   useEffect(() => {
     let timer;
@@ -72,11 +72,18 @@ export default function ResultsPage() {
       }
       try {
         const data = await fetchResults(sessionId);
-        setOutputs(data.outputs || {});
+        const exists = data.file_exists || {};
+        setFileExists(exists);
         setOutputsMeta(data.outputs_meta || {});
         setProfiling(data.profiling || null);
-        setStatus("Results ready.");
-        setStatusKind("success");
+        const hasAnyFile = Object.values(exists).some(v => v);
+        if (hasAnyFile) {
+          setStatus("Results ready.");
+          setStatusKind("success");
+        } else {
+          setStatus("No output files available. Processing may still be running or may have failed.");
+          setStatusKind("warning");
+        }
       } catch (err) {
         setStatus(err.message);
         setStatusKind("error");
@@ -145,30 +152,34 @@ export default function ResultsPage() {
             </ProgressIndicator>
           </div>
 
-          {/* Success banner */}
+          {/* Success/warning banner */}
           <Tile style={{
             marginBottom: "1.5rem",
-            backgroundColor: "#defbe6",
-            border: "1px solid #a7f0ba"
+            backgroundColor: statusKind === "success" ? "#defbe6" : "#fff8e1",
+            border: statusKind === "success" ? "1px solid #a7f0ba" : "1px solid #ffecb3"
           }}>
             <div style={{ display: "flex", alignItems: "center", gap: "1rem" }}>
               <div style={{
                 width: "48px",
                 height: "48px",
                 borderRadius: "50%",
-                backgroundColor: "#198038",
+                backgroundColor: statusKind === "success" ? "#198038" : "#f1c21b",
                 display: "flex",
                 alignItems: "center",
                 justifyContent: "center"
               }}>
-                <Checkmark size={24} style={{ color: "#fff" }} />
+                {statusKind === "success" ? (
+                  <Checkmark size={24} style={{ color: "#fff" }} />
+                ) : (
+                  <WarningAlt size={24} style={{ color: "#fff" }} />
+                )}
               </div>
               <div>
-                <div style={{ fontSize: "1.25rem", fontWeight: 600, color: "#198038" }}>
-                  Processing Complete
+                <div style={{ fontSize: "1.25rem", fontWeight: 600, color: statusKind === "success" ? "#198038" : "#8a6d3b" }}>
+                  {statusKind === "success" ? "Processing Complete" : "Results"}
                 </div>
                 <div style={{ fontSize: "0.875rem", color: "#525252" }}>
-                  Your files are ready for download
+                  {statusKind === "success" ? "Your files are ready for download" : status}
                 </div>
               </div>
             </div>
@@ -213,8 +224,8 @@ export default function ResultsPage() {
                       size="sm"
                       kind="primary"
                       renderIcon={Download}
-                      href={outputs.annotated_video ? getResultDownloadUrl(sessionId, "annotated_video") : "#"}
-                      disabled={!outputs.annotated_video}
+                      disabled={!fileExists.annotated_video}
+                      onClick={() => window.open(getResultDownloadUrl(sessionId, "annotated_video"), "_blank")}
                     >
                       Download
                     </Button>
@@ -263,8 +274,8 @@ export default function ResultsPage() {
                       size="sm"
                       kind="secondary"
                       renderIcon={Download}
-                      href={outputs.csv ? getResultDownloadUrl(sessionId, "csv") : "#"}
-                      disabled={!outputs.csv}
+                      disabled={!fileExists.csv}
+                      onClick={() => window.open(getResultDownloadUrl(sessionId, "csv"), "_blank")}
                     >
                       Download
                     </Button>
@@ -300,8 +311,8 @@ export default function ResultsPage() {
                       size="sm"
                       kind="secondary"
                       renderIcon={Download}
-                      href={outputs.elan ? getResultDownloadUrl(sessionId, "elan") : "#"}
-                      disabled={!outputs.elan}
+                      disabled={!fileExists.elan}
+                      onClick={() => window.open(getResultDownloadUrl(sessionId, "elan"), "_blank")}
                     >
                       Download
                     </Button>
@@ -337,8 +348,8 @@ export default function ResultsPage() {
                       size="sm"
                       kind="secondary"
                       renderIcon={Download}
-                      href={outputs.resource_profile ? getResultDownloadUrl(sessionId, "resource_profile") : "#"}
-                      disabled={!outputs.resource_profile}
+                      disabled={!fileExists.resource_profile}
+                      onClick={() => window.open(getResultDownloadUrl(sessionId, "resource_profile"), "_blank")}
                     >
                       Download
                     </Button>

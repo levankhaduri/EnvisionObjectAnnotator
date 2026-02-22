@@ -1,23 +1,10 @@
-Updates.md
+# Updates — TASK-CREATEFRONTEND
 
-Config
-- Frontend exposes: auto‑tune, cache caps, chunk size/seconds/overlap, compress masks, stride, ROI.
-
-Annotation
-- Added frame slider + thumbnails for fast frame navigation.
-- Point removal + undo + per‑object point list.
-- Test‑mask caching.
-
-Processing
-- Auto‑tune defaults for cache/stride/chunk + GPU memory fraction.
-- Chunked processing + cleanup between chunks.
-- Mask compression (packbits) option.
-- ROI + frame stride + interpolation.
-- Partial outputs saved on failure.
-- Video save prefers mp4v and reports save progress.
-- CSV export in background thread.
-- Persist FPS from ffprobe and reuse on save.
-
-Results
-- results response includes outputs_meta for CSV status/progress.
-- CSV download disabled while export runs.
+1. Added delete functionality for annotated objects (backend endpoint + frontend X button)
+2. Moved "Suggest Optimal Frames" button from left column to right column, above Shortcuts
+3. Wrapped right panel in a scrollable sticky container so it follows the viewport
+4. Bidirectional propagation now enabled by default in frontend and backend
+5. Live progress bar during SAM2 propagation (shows frame count instead of stuck at 20%)
+6. Processing error status now shown on ProcessingPage with link to partial results
+7. ResultsPage download buttons fixed (disabled state works, downloads open in new tab)
+8. Backend results endpoint now checks actual file existence on disk

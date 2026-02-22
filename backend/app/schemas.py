@@ -44,7 +44,7 @@ class ConfigUpdate(BaseModel):
     output_dir: Optional[str] = None
     process_start_frame: Optional[int] = None
     process_end_frame: Optional[int] = None
-    enable_bidirectional: bool = False
+    enable_bidirectional: bool = True
 
 
 class Point(BaseModel):
@@ -75,6 +75,7 @@ class ProcessingStatus(BaseModel):
 class ResultsResponse(BaseModel):
     session_id: str
     outputs: Dict[str, Optional[str]]
+    file_exists: Optional[Dict[str, bool]] = None
     profiling: Optional[Dict[str, object]] = None
     outputs_meta: Optional[Dict[str, object]] = None
 

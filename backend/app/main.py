@@ -660,6 +660,31 @@ def add_annotation_points(payload: AnnotationPayload):
     }
 
 
+@app.delete("/annotation/object/{session_id}/{object_name}")
+def delete_annotation_object(session_id: str, object_name: str):
+    try:
+        state.get_session(session_id)
+    except KeyError:
+        raise HTTPException(status_code=404, detail="Session not found")
+
+    annotations_dir = SESSIONS_DIR / session_id / "annotations"
+    if not annotations_dir.exists():
+        return {"status": "ok", "deleted_from_frames": 0}
+
+    deleted_count = 0
+    for frame_file in sorted(annotations_dir.glob("frame_*.json")):
+        try:
+            data = json.loads(frame_file.read_text())
+        except json.JSONDecodeError:
+            continue
+        if object_name in data.get("objects", {}):
+            del data["objects"][object_name]
+            frame_file.write_text(json.dumps(data, indent=2))
+            deleted_count += 1
+
+    return {"status": "ok", "object": object_name, "deleted_from_frames": deleted_count}
+
+
 @app.post("/annotation/test-mask")
 def test_mask(payload: AnnotationPayload):
     try:
@@ -783,13 +808,23 @@ def get_results(session_id: str):
     outputs_meta = session.config.get("outputs_meta", {}) if session.config else None
     profiling = session.config.get("profiling") if session.config else None
 
+    output_keys = {
+        "annotated_video": outputs.get("annotated_video"),
+        "csv": outputs.get("csv"),
+        "elan": outputs.get("elan"),
+        "resource_profile": outputs.get("resource_profile"),
+    }
+    file_exists = {}
+    for key, path_str in output_keys.items():
+        if path_str:
+            file_exists[key] = Path(path_str).exists()
+        else:
+            file_exists[key] = False
+
     return ResultsResponse(
         session_id=session_id,
-        outputs={
-            "annotated_video": outputs.get("annotated_video"),
-            "csv": outputs.get("csv"),
-            "elan": outputs.get("elan"),
-        },
+        outputs=output_keys,
+        file_exists=file_exists,
         profiling=profiling,
         outputs_meta=outputs_meta,
     )
