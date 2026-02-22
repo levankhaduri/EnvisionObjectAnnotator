@@ -13,14 +13,15 @@
   <b>Authors</b><br>
   Davide Ahmar — <a href="mailto:ahmar.davide@gmail.com">ahmar.davide@gmail.com</a><br>
   Wim Pouw — <a href="mailto:wim.pouw@donders.ru.nl">wim.pouw@donders.ru.nl</a><br>
-  Babajide Owoyele — <a href="mailto:babajide.owoyele@hpi.de">babajide.owoyele@hpi.de</a>
+  Babajide Owoyele — <a href="mailto:babajide.owoyele@hpi.de">babajide.owoyele@hpi.de</a><br>
+  Levani Khaduri — <a href="mailto:Levani.Khaduri@student.hpi.uni-potsdam.de">Levani.Khaduri@student.hpi.uni-potsdam.de</a>
 </p>
 
 <p align="center">
   <img src="extra/Video_Process.gif">
 </p>
 
-This repository provides a user-friendly Python application built on [Meta AI’s SAM2](https://github.com/facebookresearch/sam2) model for **object tracking and overlap (“looking at”) detection** in videos.  
+This repository provides a user-friendly application built on [Meta AI’s SAM2](https://github.com/facebookresearch/sam2) model for **object tracking and overlap (“looking at”) detection** in videos.  
 
 The tool was developed as part of the **EnvisionBOXBABY project**, with a focus on analyzing infant–adult interactions using videos recorded from an infant’s head-mounted camera. However, it can be used for **any scenario** where you want to annotate objects and detect when one *target* object overlaps with others.
 
@@ -33,27 +34,122 @@ The tool was developed as part of the **EnvisionBOXBABY project**, with a focus 
 - 🔍 **Event detection**: logs “looking at” events whenever the target overlaps another object:
   - By pixel overlap above a threshold  
   - Or by centroid inclusion  
+- ⚙️ **Model selection**: choose between SAM2.1 sizes or EdgeTAM (if installed).
 - 📂 **Outputs**:
   - Annotated **video** with masks and status overlays
   - Frame-by-frame **CSV** with bounding boxes, centroids, overlap info
   - Time-aligned **ELAN (.eaf)** file for qualitative coding
+- 📊 **Profiling**: timings, FPS, and GPU/RAM snapshots shown in Results.
 
 ---
 
-##  Getting Started
+## Quick Start
 
-### 1. Clone this repository
-Click the green **Code** button (top right) → **Download ZIP** → extract it to a folder (e.g., `C:\EnvisionObjectAnnotator`).  
-Or use git:
+### Prerequisites
+- **Python 3.10+** — [python.org](https://python.org)
+- **Node.js 18+** — [nodejs.org](https://nodejs.org)
+- **Git** — [git-scm.com](https://git-scm.com)
+- **ffmpeg** — [ffmpeg.org](https://ffmpeg.org/download.html) (add to PATH)
+
+### 1. Clone
 ```bash
 git clone https://github.com/DavAhm/EnvisionObjectAnnotator.git
 cd EnvisionObjectAnnotator
 ```
-2. ### Install Sam2 
-Follow the installation guide for SAM2: [SAM 2 Installation Instructions →](docs/installation_SAM2.md)
 
-3. ### Install the supporting Tools and Packages 
-Follow the installation guide for Tools and Packages: [Tools and Packages Installation Instructions →](docs/installation_tools_packages.md)
+### 2. Setup (one command)
+**Windows (PowerShell):**
+```powershell
+.\setup.ps1
+```
+
+**Mac/Linux:**
+```bash
+chmod +x setup.sh && ./setup.sh
+```
+
+This installs everything: Python venv, SAM2, EdgeTAM, model checkpoints, and frontend.
+
+### 3. Run
+**Windows:**
+```powershell
+.\run.ps1
+```
+
+**Mac/Linux:**
+```bash
+./run.sh
+```
+
+Then open **http://localhost:5173**
+
+---
+
+## Manual Setup (advanced)
+
+<details>
+<summary>Click to expand manual installation steps</summary>
+
+### Backend (Python)
+```bash
+cd backend
+python3 -m venv .venv
+
+# Windows: .\.venv\Scripts\pip
+# Mac/Linux: ./.venv/bin/pip
+
+pip install -r requirements.txt
+pip install torch torchvision torchaudio
+```
+
+### SAM2
+```bash
+git clone https://github.com/facebookresearch/sam2.git
+cd sam2 && pip install -e .
+```
+
+### EdgeTAM (optional)
+```bash
+git clone https://github.com/facebookresearch/EdgeTAM.git
+cd EdgeTAM && pip install -e . && pip install timm
+```
+
+### Checkpoints
+Download to `checkpoints/` folder:
+- [sam2.1_hiera_tiny.pt](https://dl.fbaipublicfiles.com/segment_anything_2/092824/sam2.1_hiera_tiny.pt)
+- [sam2.1_hiera_small.pt](https://dl.fbaipublicfiles.com/segment_anything_2/092824/sam2.1_hiera_small.pt)
+- [sam2.1_hiera_base_plus.pt](https://dl.fbaipublicfiles.com/segment_anything_2/092824/sam2.1_hiera_base_plus.pt)
+- [sam2.1_hiera_large.pt](https://dl.fbaipublicfiles.com/segment_anything_2/092824/sam2.1_hiera_large.pt)
+
+EdgeTAM checkpoint to `EdgeTAM/checkpoints/`:
+- [edgetam.pt](https://huggingface.co/Arnav0400/EdgeTAM/resolve/main/edgetam.pt)
+
+### Frontend
+```bash
+cd frontend && npm install
+```
+
+### Run manually
+```bash
+# Terminal 1 - Backend
+cd backend
+./.venv/bin/uvicorn app.main:app --reload
+
+# Terminal 2 - Frontend
+cd frontend
+npm run dev
+```
+
+</details>
+
+---
+
+## Notes
+
+- **GPU/CUDA**: The setup script tries CUDA-enabled PyTorch first, falls back to CPU.
+- **Apple Silicon**: MPS acceleration is experimental; CPU fallback is stable.
+- **Standalone GUI**: The original Tk GUI still exists in `Script/runEnvisionObjectAnnotator.py`.
+- **Models**: SAM2 and EdgeTAM repos are cloned locally (not committed to git).
 
 ---
 
@@ -68,7 +164,8 @@ Follow the installation guide for Tools and Packages: [Tools and Packages Instal
    - Press **T** to test masks  
    - Press **Enter** when done  
 4. **Set detection threshold** → default is 10% overlap.  
-5. **Process video** → masks are propagated, overlaps are detected, and outputs are generated.
+5. **Choose model** → select SAM2.1 or EdgeTAM on the Config page.  
+6. **Process video** → masks are propagated, overlaps are detected, and outputs are generated.
 
 ---
 
@@ -95,4 +192,3 @@ If you use this tool in your research, please cite the EnvisionBox project.
 ##  Related Resources
 - [Meta AI SAM2](https://github.com/facebookresearch/sam2)  
 - [EnvisionBox Project](https://www.envisionbox.org)  
-

@@ -1,0 +1,588 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>EnvisionObjectAnnotator - Processing</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css">
+    <style>
+        body {
+            font-family: 'Inter', sans-serif;
+        }
+        .control-panel {
+            background: white;
+            border: 2px solid #e5e7eb;
+            border-radius: 12px;
+            padding: 24px;
+            transition: all 0.3s ease;
+        }
+        .btn-primary {
+            background: black;
+            color: white;
+            padding: 12px 24px;
+            border-radius: 8px;
+            font-weight: 600;
+            transition: all 0.3s ease;
+            border: none;
+            cursor: pointer;
+        }
+        .btn-primary:hover:not(:disabled) {
+            background: #374151;
+            transform: translateY(-2px);
+            box-shadow: 0 4px 12px rgba(0,0,0,0.2);
+        }
+        .btn-primary:disabled {
+            background: #d1d5db;
+            cursor: not-allowed;
+        }
+        .btn-secondary {
+            background: white;
+            color: black;
+            border: 2px solid black;
+            padding: 12px 24px;
+            border-radius: 8px;
+            font-weight: 600;
+            transition: all 0.3s ease;
+            cursor: pointer;
+        }
+        .btn-secondary:hover {
+            background: black;
+            color: white;
+        }
+        .progress-steps {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 8px;
+            margin-bottom: 32px;
+        }
+        .step {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+        .step-circle {
+            width: 32px;
+            height: 32px;
+            border-radius: 50%;
+            border: 2px solid #e5e7eb;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-weight: 600;
+            font-size: 14px;
+        }
+        .step-circle.active {
+            background: black;
+            color: white;
+            border-color: black;
+        }
+        .step-circle.completed {
+            background: #d1d5db;
+            color: white;
+            border-color: #d1d5db;
+        }
+        .step-line {
+            width: 40px;
+            height: 2px;
+            background: #e5e7eb;
+        }
+        .video-preview {
+            background: #000;
+            border: 2px solid #e5e7eb;
+            border-radius: 12px;
+            aspect-ratio: 16/9;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            position: relative;
+            overflow: hidden;
+        }
+        .progress-bar {
+            height: 12px;
+            background: #e5e7eb;
+            border-radius: 6px;
+            overflow: hidden;
+        }
+        .progress-fill {
+            height: 100%;
+            background: black;
+            transition: width 0.3s ease;
+            position: relative;
+        }
+        .progress-fill::after {
+            content: '';
+            position: absolute;
+            top: 0;
+            left: 0;
+            bottom: 0;
+            right: 0;
+            background: linear-gradient(90deg, transparent, rgba(255,255,255,0.3), transparent);
+            animation: shimmer 2s infinite;
+        }
+        @keyframes shimmer {
+            0% { transform: translateX(-100%); }
+            100% { transform: translateX(100%); }
+        }
+        .stat-card {
+            background: white;
+            border: 2px solid #e5e7eb;
+            border-radius: 8px;
+            padding: 16px;
+        }
+        .log-entry {
+            padding: 12px;
+            border-left: 3px solid #e5e7eb;
+            margin-bottom: 8px;
+            font-size: 13px;
+            font-family: 'Courier New', monospace;
+            background: #f9fafb;
+            border-radius: 4px;
+        }
+        .log-entry.info {
+            border-left-color: #3b82f6;
+        }
+        .log-entry.success {
+            border-left-color: #22c55e;
+        }
+        .log-entry.warning {
+            border-left-color: #f59e0b;
+        }
+        .log-entry.event {
+            border-left-color: #8b5cf6;
+            background: #faf5ff;
+        }
+        .spinner {
+            border: 3px solid #e5e7eb;
+            border-top: 3px solid black;
+            border-radius: 50%;
+            width: 40px;
+            height: 40px;
+            animation: spin 1s linear infinite;
+        }
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+        .pulse {
+            animation: pulse 2s cubic-bezier(0.4, 0, 0.6, 1) infinite;
+        }
+        @keyframes pulse {
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0.5; }
+        }
+        canvas {
+            width: 100%;
+            height: 100%;
+            object-fit: contain;
+        }
+    </style>
+</head>
+<body class="bg-white text-black">
+    <!-- Header -->
+    <header class="bg-white border-b-2 border-black fixed w-full z-50">
+        <nav class="container mx-auto px-6 py-4 flex justify-between items-center">
+            <div class="text-xl font-semibold flex items-center">
+                <i class="fas fa-eye mr-3"></i>
+                EnvisionObjectAnnotator
+            </div>
+            <div class="flex space-x-4">
+                <button class="btn-secondary" onclick="cancelProcessing()" id="cancelBtn" aria-label="Cancel processing">
+                    <i class="fas fa-times mr-2"></i>Cancel
+                </button>
+                <button class="btn-primary" onclick="viewResults()" id="viewResultsBtn" disabled aria-label="View results">
+                    View Results<i class="fas fa-arrow-right ml-2"></i>
+                </button>
+            </div>
+        </nav>
+    </header>
+
+    <main class="pt-24 pb-16">
+        <div class="container mx-auto px-6">
+            <!-- Progress Steps -->
+            <div class="progress-steps">
+                <div class="step">
+                    <div class="step-circle completed">1</div>
+                    <span class="text-sm font-medium text-gray-600">Setup</span>
+                </div>
+                <div class="step-line"></div>
+                <div class="step">
+                    <div class="step-circle completed">2</div>
+                    <span class="text-sm font-medium text-gray-600">Configuration</span>
+                </div>
+                <div class="step-line"></div>
+                <div class="step">
+                    <div class="step-circle completed">3</div>
+                    <span class="text-sm font-medium text-gray-600">Annotation</span>
+                </div>
+                <div class="step-line"></div>
+                <div class="step">
+                    <div class="step-circle active">4</div>
+                    <span class="text-sm font-medium">Processing</span>
+                </div>
+                <div class="step-line"></div>
+                <div class="step">
+                    <div class="step-circle">5</div>
+                    <span class="text-sm font-medium text-gray-400">Results</span>
+                </div>
+            </div>
+
+            <div class="grid grid-cols-12 gap-6">
+                <!-- Left Sidebar -->
+                <div class="col-span-3">
+                    <!-- Processing Status -->
+                    <div class="mb-6">
+                        <h2 class="text-sm font-semibold mb-3 text-gray-600 uppercase tracking-wide">Status</h2>
+                        <div class="control-panel">
+                            <div class="flex items-center gap-3 mb-4">
+                                <div class="spinner"></div>
+                                <div>
+                                    <div class="font-semibold text-sm" id="statusText">Initializing...</div>
+                                    <div class="text-xs text-gray-600" id="statusSubtext">Please wait</div>
+                                </div>
+                            </div>
+                            <div class="progress-bar mb-2">
+                                <div class="progress-fill" id="progressBar" style="width: 0%"></div>
+                            </div>
+                            <div class="flex justify-between text-xs text-gray-600">
+                                <span id="progressText">0%</span>
+                                <span id="frameProgress">0 / 0 frames</span>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Processing Stats -->
+                    <div class="mb-6">
+                        <h2 class="text-sm font-semibold mb-3 text-gray-600 uppercase tracking-wide">Statistics</h2>
+                        <div class="space-y-3">
+                            <div class="stat-card">
+                                <div class="text-xs text-gray-600 mb-1">Frames Processed</div>
+                                <div class="text-2xl font-bold" id="framesProcessed">0</div>
+                            </div>
+                            <div class="stat-card">
+                                <div class="text-xs text-gray-600 mb-1">Overlaps Detected</div>
+                                <div class="text-2xl font-bold text-purple-600" id="overlapsDetected">0</div>
+                            </div>
+                            <div class="stat-card">
+                                <div class="text-xs text-gray-600 mb-1">Processing Speed</div>
+                                <div class="text-2xl font-bold" id="processingSpeed">-- fps</div>
+                            </div>
+                            <div class="stat-card">
+                                <div class="text-xs text-gray-600 mb-1">Time Elapsed</div>
+                                <div class="text-2xl font-bold" id="timeElapsed">0:00</div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Configuration Summary -->
+                    <div>
+                        <h2 class="text-sm font-semibold mb-3 text-gray-600 uppercase tracking-wide">Configuration</h2>
+                        <div class="control-panel">
+                            <div class="space-y-2 text-sm">
+                                <div class="flex justify-between">
+                                    <span class="text-gray-600">Model:</span>
+                                    <span class="font-semibold">SAM2 Base</span>
+                                </div>
+                                <div class="flex justify-between">
+                                    <span class="text-gray-600">Threshold:</span>
+                                    <span class="font-semibold">10%</span>
+                                </div>
+                                <div class="flex justify-between">
+                                    <span class="text-gray-600">Batch Size:</span>
+                                    <span class="font-semibold">50 frames</span>
+                                </div>
+                                <div class="flex justify-between">
+                                    <span class="text-gray-600">Objects:</span>
+                                    <span class="font-semibold" id="objectCount">0</span>
+                                </div>
+                                <div class="flex justify-between">
+                                    <span class="text-gray-600">Targets:</span>
+                                    <span class="font-semibold" id="targetCount">0</span>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Main Content -->
+                <div class="col-span-6">
+                    <!-- Live Preview -->
+                    <div class="mb-6">
+                        <h2 class="text-sm font-semibold mb-3 text-gray-600 uppercase tracking-wide">Live Preview</h2>
+                        <div class="video-preview" id="videoContainer">
+                            <canvas id="previewCanvas"></canvas>
+                        </div>
+                        <div class="control-panel mt-4">
+                            <div class="flex justify-between items-center text-sm">
+                                <div>
+                                    <span class="text-gray-600">Current Frame:</span>
+                                    <span class="font-semibold ml-2" id="currentFrame">0</span>
+                                </div>
+                                <div>
+                                    <span class="text-gray-600">Reference Frame:</span>
+                                    <span class="font-semibold ml-2">0</span>
+                                </div>
+                                <div>
+                                    <span class="text-gray-600">Total Frames:</span>
+                                    <span class="font-semibold ml-2" id="totalFrames">300</span>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Current Events -->
+                    <div>
+                        <h2 class="text-sm font-semibold mb-3 text-gray-600 uppercase tracking-wide">Active Events</h2>
+                        <div class="control-panel">
+                            <div id="activeEvents">
+                                <div class="text-sm text-gray-500 text-center py-4">
+                                    No active overlap events
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Right Sidebar -->
+                <div class="col-span-3">
+                    <!-- Processing Log -->
+                    <div>
+                        <h2 class="text-sm font-semibold mb-3 text-gray-600 uppercase tracking-wide">Processing Log</h2>
+                        <div class="control-panel" style="max-height: 600px; overflow-y: auto;" id="logContainer">
+                            <!-- Logs will appear here -->
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </main>
+
+    <script>
+        let canvas, ctx;
+        let currentFrame = 0;
+        let totalFrames = 300;
+        let startTime;
+        let processingInterval;
+        let logUpdateInterval;
+        let overlapsCount = 0;
+        let isProcessing = true;
+
+        // Simulated objects from annotation
+        const objects = [
+            { id: 1, name: 'ball', isTarget: false, color: '#3b82f6' },
+            { id: 2, name: 'basket', isTarget: false, color: '#f59e0b' },
+            { id: 3, name: 'toy', isTarget: false, color: '#10b981' },
+            { id: 4, name: 'target_marker', isTarget: true, color: '#ef4444' }
+        ];
+
+        document.addEventListener('DOMContentLoaded', () => {
+            setupCanvas();
+            updateConfigSummary();
+            startProcessing();
+        });
+
+        function setupCanvas() {
+            canvas = document.getElementById('previewCanvas');
+            ctx = canvas.getContext('2d');
+            canvas.width = 800;
+            canvas.height = 450;
+        }
+
+        function updateConfigSummary() {
+            document.getElementById('objectCount').textContent = objects.length;
+            document.getElementById('targetCount').textContent = objects.filter(o => o.isTarget).length;
+            document.getElementById('totalFrames').textContent = totalFrames;
+        }
+
+        function startProcessing() {
+            startTime = Date.now();
+            
+            addLog('🔧 Initializing SAM2 state...', 'info');
+            
+            setTimeout(() => {
+                addLog(`📌 Adding prompts for ${objects.length} objects...`, 'info');
+                objects.forEach(obj => {
+                    addLog(`   → ${obj.name}: 5 positive, 2 negative points`, 'info');
+                });
+                
+                setTimeout(() => {
+                    addLog('🔄 Propagating through video...', 'info');
+                    document.getElementById('statusText').textContent = 'Processing Video';
+                    document.getElementById('statusSubtext').textContent = 'Tracking objects...';
+                    
+                    processFrames();
+                }, 1000);
+            }, 1500);
+        }
+
+        function processFrames() {
+            const fps = 15; // Simulate 15 fps processing
+            const frameTime = 1000 / fps;
+            
+            processingInterval = setInterval(() => {
+                if (currentFrame >= totalFrames) {
+                    finishProcessing();
+                    return;
+                }
+                
+                currentFrame++;
+                updateFrame();
+                updateProgress();
+                updateStats();
+                
+                // Randomly detect overlaps (simulate)
+                if (Math.random() > 0.92 && objects.some(o => o.isTarget)) {
+                    detectOverlap();
+                }
+                
+            }, frameTime);
+        }
+
+        function updateFrame() {
+            // Draw simulated frame with objects
+            ctx.fillStyle = '#374151';
+            ctx.fillRect(0, 0, canvas.width, canvas.height);
+            
+            // Draw frame number
+            ctx.fillStyle = '#9ca3af';
+            ctx.font = '14px Inter';
+            ctx.textAlign = 'left';
+            ctx.fillText(`Frame ${currentFrame}`, 20, 30);
+            
+            // Draw simulated objects with masks
+            objects.forEach((obj, idx) => {
+                const x = 200 + idx * 150 + Math.sin(currentFrame * 0.05 + idx) * 30;
+                const y = 250 + Math.cos(currentFrame * 0.03 + idx) * 40;
+                
+                // Draw mask
+                ctx.fillStyle = obj.color + '40';
+                ctx.beginPath();
+                ctx.arc(x, y, 50, 0, Math.PI * 2);
+                ctx.fill();
+                
+                // Draw outline
+                ctx.strokeStyle = obj.color;
+                ctx.lineWidth = 2;
+                ctx.stroke();
+                
+                // Draw label
+                ctx.fillStyle = '#ffffff';
+                ctx.font = '12px Inter';
+                ctx.textAlign = 'center';
+                ctx.fillText(obj.name, x, y + 70);
+            });
+            
+            document.getElementById('currentFrame').textContent = currentFrame;
+        }
+
+        function updateProgress() {
+            const percent = (currentFrame / totalFrames) * 100;
+            document.getElementById('progressBar').style.width = percent + '%';
+            document.getElementById('progressText').textContent = Math.round(percent) + '%';
+            document.getElementById('frameProgress').textContent = `${currentFrame} / ${totalFrames} frames`;
+        }
+
+        function updateStats() {
+            document.getElementById('framesProcessed').textContent = currentFrame;
+            
+            const elapsed = Math.floor((Date.now() - startTime) / 1000);
+            const minutes = Math.floor(elapsed / 60);
+            const seconds = elapsed % 60;
+            document.getElementById('timeElapsed').textContent = 
+                `${minutes}:${seconds.toString().padStart(2, '0')}`;
+            
+            const speed = currentFrame > 0 ? (currentFrame / elapsed).toFixed(1) : '--';
+            document.getElementById('processingSpeed').textContent = speed + ' fps';
+        }
+
+        function detectOverlap() {
+            overlapsCount++;
+            document.getElementById('overlapsDetected').textContent = overlapsCount;
+            
+            const target = objects.find(o => o.isTarget);
+            const otherObjects = objects.filter(o => !o.isTarget);
+            const overlappedObject = otherObjects[Math.floor(Math.random() * otherObjects.length)];
+            
+            if (overlapsCount === 1) {
+                addLog('✅ NEW OVERLAP DETECTED: First event will be announced', 'event');
+            }
+            
+            addLog(`🎯 Event: ${target.name} ↔ ${overlappedObject.name}`, 'event');
+            
+            // Update active events
+            updateActiveEvents(target.name, overlappedObject.name);
+        }
+
+        function updateActiveEvents(target, object) {
+            const container = document.getElementById('activeEvents');
+            container.innerHTML = `
+                <div class="flex items-center gap-3 p-3 bg-purple-50 border-2 border-purple-200 rounded-lg">
+                    <i class="fas fa-crosshairs text-purple-600 text-xl"></i>
+                    <div class="flex-1">
+                        <div class="font-semibold text-sm">Looking at ${object}</div>
+                        <div class="text-xs text-gray-600">${target} overlapping</div>
+                    </div>
+                </div>
+            `;
+        }
+
+        function addLog(message, type = 'info') {
+            const container = document.getElementById('logContainer');
+            const entry = document.createElement('div');
+            entry.className = `log-entry ${type}`;
+            
+            const timestamp = new Date().toLocaleTimeString();
+            entry.innerHTML = `<span class="text-gray-500">[${timestamp}]</span> ${message}`;
+            
+            container.appendChild(entry);
+            container.scrollTop = container.scrollHeight;
+        }
+
+        function finishProcessing() {
+            clearInterval(processingInterval);
+            isProcessing = false;
+            
+            addLog('💾 Saving annotated video...', 'success');
+            
+            setTimeout(() => {
+                addLog('💾 Saving CSV file...', 'success');
+                
+                setTimeout(() => {
+                    addLog('💾 Saving ELAN file...', 'success');
+                    
+                    setTimeout(() => {
+                        addLog('✅ Processing complete!', 'success');
+                        addLog(`📊 Summary: ${totalFrames} frames, ${overlapsCount} overlap events`, 'info');
+                        
+                        document.getElementById('statusText').textContent = 'Complete!';
+                        document.getElementById('statusSubtext').textContent = 'All files saved';
+                        document.querySelector('.spinner').style.display = 'none';
+                        
+                        document.getElementById('viewResultsBtn').disabled = false;
+                        document.getElementById('cancelBtn').textContent = 'Close';
+                        
+                    }, 800);
+                }, 800);
+            }, 800);
+        }
+
+        function cancelProcessing() {
+            if (isProcessing) {
+                if (confirm('Cancel processing? Progress will be lost.')) {
+                    clearInterval(processingInterval);
+                    addLog('❌ Processing cancelled by user', 'warning');
+                    window.location.href = 'annotation.html';
+                }
+            } else {
+                window.location.href = 'intro.html';
+            }
+        }
+
+        function viewResults() {
+            window.location.href = 'results.html';
+        }
+    </script>
+</body>
+</html>

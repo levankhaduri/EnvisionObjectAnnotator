@@ -1,0 +1,766 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>EnvisionObjectAnnotator — Interactive Demo</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body { font-family: 'IBM Plex Sans', -apple-system, BlinkMacSystemFont, sans-serif; background: #f4f4f4; color: #161616; overflow: hidden; height: 100vh; }
+
+  /* Demo shell */
+  .demo-shell { width: 100vw; height: 100vh; position: relative; overflow: hidden; }
+  .demo-header { height: 48px; background: #fff; border-bottom: 1px solid #e0e0e0; display: flex; align-items: center; justify-content: space-between; padding: 0 1rem; }
+  .demo-header .logo { display: flex; align-items: center; gap: 0.75rem; }
+  .demo-header .logo-icon { width: 32px; height: 32px; border-radius: 4px; background: #0f62fe; display: flex; align-items: center; justify-content: center; }
+  .demo-header .logo-icon svg { fill: #fff; }
+  .demo-header .logo span { font-weight: 600; }
+  .demo-content { height: calc(100vh - 48px); position: relative; }
+
+  /* Animated cursor */
+  .cursor {
+    position: fixed; z-index: 9999; pointer-events: none;
+    width: 24px; height: 24px;
+    transition: left 0.8s cubic-bezier(0.4, 0, 0.2, 1), top 0.8s cubic-bezier(0.4, 0, 0.2, 1);
+  }
+  .cursor svg { width: 24px; height: 24px; filter: drop-shadow(1px 2px 2px rgba(0,0,0,0.3)); }
+  .cursor.clicking .click-ring {
+    position: absolute; left: 0; top: 0;
+    width: 24px; height: 24px; border-radius: 50%;
+    border: 2px solid #0f62fe;
+    animation: clickPulse 0.4s ease-out forwards;
+  }
+  @keyframes clickPulse {
+    0% { transform: scale(0.5); opacity: 1; }
+    100% { transform: scale(2); opacity: 0; }
+  }
+
+  /* Steps */
+  .step { position: absolute; inset: 0; opacity: 0; transition: opacity 0.6s ease; pointer-events: none; padding: 2rem; overflow: auto; }
+  .step.active { opacity: 1; }
+
+  /* Narration bar */
+  .narration {
+    position: fixed; bottom: 0; left: 0; right: 0; z-index: 9998;
+    background: #161616; color: #f4f4f4; padding: 1rem 2rem;
+    display: flex; align-items: center; gap: 1rem;
+    font-size: 0.9375rem; min-height: 56px;
+  }
+  .narration .step-badge { background: #0f62fe; color: #fff; padding: 0.25rem 0.75rem; border-radius: 12px; font-size: 0.75rem; font-weight: 600; white-space: nowrap; }
+  .narration .text { flex: 1; }
+  .narration .progress { display: flex; gap: 4px; }
+  .narration .progress .dot { width: 8px; height: 8px; border-radius: 50%; background: #525252; transition: background 0.3s; }
+  .narration .progress .dot.active { background: #0f62fe; }
+  .narration .progress .dot.done { background: #42be65; }
+
+  /* Shared card/tile styles */
+  .tile { background: #fff; border-radius: 4px; padding: 1.5rem; }
+  .btn { display: inline-flex; align-items: center; gap: 0.5rem; padding: 0.6rem 1.2rem; border-radius: 0; font-size: 0.875rem; font-weight: 500; cursor: pointer; border: none; transition: all 0.15s; }
+  .btn-primary { background: #0f62fe; color: #fff; }
+  .btn-primary:hover { background: #0353e9; }
+  .btn-secondary { background: #e0e0e0; color: #161616; }
+  .btn-ghost { background: transparent; color: #0f62fe; }
+  .tag { display: inline-flex; align-items: center; padding: 0.125rem 0.5rem; border-radius: 12px; font-size: 0.75rem; font-weight: 500; }
+  .tag-blue { background: #d0e2ff; color: #0043ce; }
+  .tag-cyan { background: #bae6ff; color: #00539a; }
+  .tag-green { background: #a7f0ba; color: #0e6027; }
+  .tag-gray { background: #e0e0e0; color: #393939; }
+
+  /* Step 1: Intro */
+  .intro-hero { text-align: center; padding: 3rem 0 2rem; }
+  .intro-hero h1 { font-size: 2.5rem; font-weight: 300; margin-bottom: 0.75rem; }
+  .intro-hero p { font-size: 1.125rem; color: #525252; max-width: 600px; margin: 0 auto 1.5rem; }
+  .feature-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 1rem; max-width: 900px; margin: 0 auto; }
+  .feature-card { text-align: center; padding: 1.5rem; display: flex; flex-direction: column; align-items: center; }
+  .feature-card .icon { width: 32px; height: 32px; margin-bottom: 0.75rem; color: #0f62fe; }
+  .feature-card h3 { font-size: 0.9375rem; font-weight: 600; margin-bottom: 0.25rem; }
+  .feature-card p { font-size: 0.8125rem; color: #525252; }
+
+  /* Step 2: Config */
+  .config-layout { display: grid; grid-template-columns: 250px 1fr 300px; gap: 1rem; max-width: 1200px; margin: 0 auto; }
+  .config-upload { display: flex; flex-direction: column; gap: 1rem; }
+  .upload-zone { border: 2px dashed #a8a8a8; border-radius: 4px; padding: 2rem; text-align: center; color: #6f6f6f; cursor: pointer; transition: all 0.3s; }
+  .upload-zone.active { border-color: #0f62fe; background: #edf5ff; color: #0f62fe; }
+  .upload-zone.done { border-color: #42be65; background: #defbe6; color: #198038; }
+  .video-preview { background: #000; aspect-ratio: 16/9; border-radius: 4px; display: flex; align-items: center; justify-content: center; overflow: hidden; position: relative; }
+  .video-placeholder { width: 100%; height: 100%; background: linear-gradient(135deg, #262626, #393939); display: flex; flex-direction: column; align-items: center; justify-content: center; color: #6f6f6f; gap: 0.5rem; }
+  .video-placeholder.loaded { background: linear-gradient(135deg, #1a3a5c, #2d5a3a, #5a4a2d); }
+  .video-controls { position: absolute; bottom: 0; left: 0; right: 0; height: 36px; background: rgba(0,0,0,0.7); display: flex; align-items: center; padding: 0 0.5rem; gap: 0.5rem; opacity: 0; transition: opacity 0.3s; }
+  .video-preview:hover .video-controls, .video-controls.visible { opacity: 1; }
+  .video-timeline { flex: 1; height: 4px; background: #525252; border-radius: 2px; position: relative; }
+  .video-timeline .fill { height: 100%; background: #0f62fe; border-radius: 2px; width: 0; transition: width 0.3s; }
+  .config-settings { display: flex; flex-direction: column; gap: 0.75rem; }
+  .form-field { display: flex; flex-direction: column; gap: 0.25rem; }
+  .form-field label { font-size: 0.75rem; color: #525252; font-weight: 500; }
+  .form-field select, .form-field input { padding: 0.4rem 0.5rem; border: 1px solid #e0e0e0; border-radius: 2px; font-size: 0.875rem; background: #fff; }
+  .form-field select:focus, .form-field input:focus { outline: 2px solid #0f62fe; outline-offset: -2px; }
+  .toggle-row { display: flex; align-items: center; justify-content: space-between; padding: 0.5rem 0; }
+  .toggle-row label { font-size: 0.8125rem; }
+  .toggle { width: 40px; height: 20px; border-radius: 10px; background: #c6c6c6; position: relative; cursor: pointer; transition: background 0.2s; }
+  .toggle.on { background: #0f62fe; }
+  .toggle .knob { width: 16px; height: 16px; border-radius: 50%; background: #fff; position: absolute; top: 2px; left: 2px; transition: left 0.2s; }
+  .toggle.on .knob { left: 22px; }
+
+  /* Step 3: Annotation */
+  .ann-layout { display: grid; grid-template-columns: 1fr 280px; gap: 1rem; max-width: 1100px; margin: 0 auto; }
+  .ann-canvas { background: #000; aspect-ratio: 16/9; border-radius: 4px; position: relative; overflow: hidden; }
+  .ann-frame { width: 100%; height: 100%; object-fit: cover; }
+  .ann-frame-placeholder { width: 100%; height: 100%; background: linear-gradient(135deg, #1a3a5c 0%, #2d5a3a 50%, #5a4a2d 100%); }
+  .ann-point { position: absolute; width: 18px; height: 18px; border-radius: 50%; border: 3px solid #fff; transform: translate(-50%, -50%); box-shadow: 0 2px 6px rgba(0,0,0,0.4); transition: all 0.3s; opacity: 0; }
+  .ann-point.visible { opacity: 1; }
+  .ann-point.positive { background: #42be65; }
+  .ann-point.negative { background: #da1e28; }
+  .ann-mask { position: absolute; inset: 0; opacity: 0; transition: opacity 0.5s; }
+  .ann-mask.visible { opacity: 0.35; }
+  .ann-sidebar { display: flex; flex-direction: column; gap: 1rem; }
+  .object-item { padding: 0.75rem; border: 2px solid #e0e0e0; border-radius: 4px; cursor: pointer; transition: all 0.15s; display: flex; align-items: center; justify-content: space-between; }
+  .object-item.selected { border-color: #0f62fe; background: #e5f6ff; }
+  .object-item .name { font-weight: 500; display: flex; align-items: center; gap: 0.5rem; }
+  .suggest-btn { width: 100%; margin-top: 0.5rem; justify-content: center; }
+  .suggest-modal { position: absolute; inset: 0; background: rgba(0,0,0,0.5); display: flex; align-items: center; justify-content: center; opacity: 0; transition: opacity 0.3s; pointer-events: none; z-index: 10; }
+  .suggest-modal.visible { opacity: 1; }
+  .suggest-modal-content { background: #fff; border-radius: 4px; padding: 1.5rem; width: 90%; max-width: 700px; }
+  .suggest-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 0.75rem; margin: 1rem 0; }
+  .suggest-card { border: 2px solid #e0e0e0; border-radius: 4px; overflow: hidden; transition: all 0.15s; }
+  .suggest-card.selected { border-color: #0f62fe; background: #e5f6ff; }
+  .suggest-thumb { height: 80px; background: linear-gradient(135deg, #1a3a5c, #2d5a3a); }
+  .suggest-info { padding: 0.5rem; font-size: 0.75rem; display: flex; justify-content: space-between; align-items: center; }
+
+  /* Step 4: Processing */
+  .proc-layout { max-width: 700px; margin: 0 auto; text-align: center; }
+  .proc-preview { background: #000; aspect-ratio: 16/9; border-radius: 4px; margin-bottom: 1.5rem; position: relative; overflow: hidden; }
+  .proc-overlay { position: absolute; inset: 0; background: linear-gradient(135deg, #1a3a5c, #2d5a3a, #5a4a2d); }
+  .proc-mask-anim { position: absolute; inset: 0; opacity: 0; transition: opacity 0.3s; }
+  .proc-mask-anim.visible { opacity: 0.4; }
+  .proc-frame-counter { position: absolute; bottom: 8px; right: 12px; color: #fff; font-family: monospace; font-size: 0.75rem; background: rgba(0,0,0,0.6); padding: 2px 8px; border-radius: 2px; }
+  .progress-bar { height: 8px; background: #e0e0e0; border-radius: 4px; overflow: hidden; margin-bottom: 1rem; }
+  .progress-bar .fill { height: 100%; background: #0f62fe; transition: width 0.3s ease; border-radius: 4px; }
+  .proc-stats { display: grid; grid-template-columns: repeat(3, 1fr); gap: 1rem; margin-top: 1rem; }
+  .stat-card { padding: 1rem; text-align: center; }
+  .stat-card .value { font-size: 1.5rem; font-weight: 600; color: #0f62fe; }
+  .stat-card .label { font-size: 0.75rem; color: #525252; margin-top: 0.25rem; }
+
+  /* Step 5: Results */
+  .results-layout { max-width: 800px; margin: 0 auto; }
+  .results-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 1.5rem; }
+  .results-header h2 { font-size: 1.25rem; font-weight: 600; }
+  .export-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 1rem; margin-bottom: 1.5rem; }
+  .export-card { padding: 1.5rem; text-align: center; display: flex; flex-direction: column; align-items: center; gap: 0.5rem; cursor: pointer; transition: all 0.15s; border: 2px solid transparent; }
+  .export-card:hover { border-color: #0f62fe; }
+  .export-card .icon { font-size: 2rem; }
+  .export-card h4 { font-weight: 600; font-size: 0.9375rem; }
+  .export-card p { font-size: 0.75rem; color: #525252; }
+  .results-preview { background: #000; aspect-ratio: 16/9; border-radius: 4px; overflow: hidden; position: relative; }
+  .results-preview .overlay-text { position: absolute; bottom: 12px; left: 12px; color: #fff; font-size: 0.75rem; background: rgba(0,0,0,0.6); padding: 4px 10px; border-radius: 2px; }
+
+  /* SVG masks for annotation demo */
+  .mask-hand { fill: #42be65; }
+  .mask-cup { fill: #da1e28; }
+  .mask-target { fill: #0f62fe; }
+
+  /* Replay button */
+  .replay-btn { position: fixed; top: 56px; right: 1rem; z-index: 9997; }
+</style>
+</head>
+<body>
+<div class="demo-shell">
+  <!-- Header -->
+  <div class="demo-header">
+    <div class="logo">
+      <div class="logo-icon">
+        <svg width="20" height="20" viewBox="0 0 32 32"><circle cx="16" cy="16" r="6" fill="none" stroke="#fff" stroke-width="2"/><path d="M16 4v4M16 24v4M4 16h4M24 16h4" stroke="#fff" stroke-width="2"/></svg>
+      </div>
+      <span>EnvisionObjectAnnotator</span>
+    </div>
+    <span style="font-size: 0.75rem; color: #6f6f6f;">Interactive Demo</span>
+  </div>
+
+  <div class="demo-content">
+    <!-- Step 1: Intro -->
+    <div class="step active" id="step-intro">
+      <div class="intro-hero">
+        <h1>Video Object Annotation</h1>
+        <p>Annotate objects across multiple frames, track them bidirectionally with SAM2, and detect gaze overlaps for behavioral research.</p>
+        <button class="btn btn-primary" id="btn-start" style="font-size: 1rem; padding: 0.8rem 2rem;">
+          &#9654; Start Annotating
+        </button>
+      </div>
+      <div class="feature-grid">
+        <div class="tile feature-card">
+          <div class="icon">&#128065;</div>
+          <h3>Point-based annotation</h3>
+          <p>Click to mark objects on one or more reference frames</p>
+        </div>
+        <div class="tile feature-card">
+          <div class="icon">&#127909;</div>
+          <h3>SAM2 tracking</h3>
+          <p>Forward and backward propagation with multiple model sizes</p>
+        </div>
+        <div class="tile feature-card">
+          <div class="icon">&#128200;</div>
+          <h3>Gaze &amp; overlap detection</h3>
+          <p>Automatic target overlap tracking with ELAN and CSV export</p>
+        </div>
+        <div class="tile feature-card">
+          <div class="icon">&#128196;</div>
+          <h3>Smart frame suggestion</h3>
+          <p>Find the sharpest, most informative frames to annotate</p>
+        </div>
+      </div>
+    </div>
+
+    <!-- Step 2: Config -->
+    <div class="step" id="step-config">
+      <div class="config-layout">
+        <div class="config-upload">
+          <div class="tile">
+            <h3 style="font-size: 1rem; font-weight: 600; margin-bottom: 1rem;">&#128228; Upload</h3>
+            <div class="upload-zone" id="upload-zone">
+              <div style="font-size: 2rem; margin-bottom: 0.5rem;">&#128193;</div>
+              <p style="font-size: 0.875rem;">Drop video here<br>or click to browse</p>
+            </div>
+            <div id="upload-status" style="font-size: 0.8125rem; color: #525252; margin-top: 0.5rem;"></div>
+          </div>
+          <div class="tile config-settings">
+            <h3 style="font-size: 1rem; font-weight: 600; margin-bottom: 0.5rem;">&#9881; Settings</h3>
+            <div class="form-field">
+              <label>Model</label>
+              <select><option>SAM2.1 Large (hiera_l)</option></select>
+            </div>
+            <div class="form-field">
+              <label>Batch Size</label>
+              <input type="text" value="50">
+            </div>
+            <div class="toggle-row">
+              <label>Bidirectional</label>
+              <div class="toggle" id="toggle-bidir"><div class="knob"></div></div>
+            </div>
+          </div>
+        </div>
+        <div>
+          <div class="tile" style="padding: 0; overflow: hidden;">
+            <div class="video-preview">
+              <div class="video-placeholder" id="video-placeholder">
+                <div style="font-size: 3rem;">&#127916;</div>
+                <span>No video selected</span>
+              </div>
+              <div class="video-controls" id="video-controls">
+                <span style="color: #fff; font-size: 0.75rem;">&#9654;</span>
+                <div class="video-timeline"><div class="fill" id="timeline-fill"></div></div>
+                <span style="color: #fff; font-size: 0.6875rem; font-family: monospace;" id="time-display">0:00 / 2:30</span>
+              </div>
+            </div>
+          </div>
+          <div style="display: flex; gap: 0.5rem; margin-top: 1rem;">
+            <button class="btn btn-secondary" style="flex: 1;">&#9986; Set Start Here</button>
+            <button class="btn btn-secondary" style="flex: 1;">&#9986; Set End Here</button>
+          </div>
+          <button class="btn btn-primary" id="btn-extract" style="width: 100%; margin-top: 0.75rem; justify-content: center;">
+            Extract Frames
+          </button>
+        </div>
+        <div class="tile config-settings">
+          <h3 style="font-size: 1rem; font-weight: 600; margin-bottom: 0.5rem;">Export</h3>
+          <div class="toggle-row"><label>&#9745; Annotated video</label></div>
+          <div class="toggle-row"><label>&#9745; CSV data</label></div>
+          <div class="toggle-row"><label>&#9745; ELAN timeline</label></div>
+          <div style="border-top: 1px solid #e0e0e0; padding-top: 0.75rem; margin-top: 0.5rem;">
+            <button class="btn btn-primary" id="btn-to-annotate" style="width: 100%; justify-content: center;">
+              Start Annotation &#8594;
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Step 3: Annotation -->
+    <div class="step" id="step-annotate">
+      <div class="ann-layout">
+        <div>
+          <div class="tile" style="padding: 0; overflow: hidden; margin-bottom: 1rem;">
+            <div class="ann-canvas" id="ann-canvas">
+              <div class="ann-frame-placeholder" id="ann-bg"></div>
+              <!-- Annotation points -->
+              <div class="ann-point positive" id="pt-1" style="left: 35%; top: 40%;"></div>
+              <div class="ann-point positive" id="pt-2" style="left: 38%; top: 50%;"></div>
+              <div class="ann-point negative" id="pt-3" style="left: 42%; top: 30%;"></div>
+              <div class="ann-point positive" id="pt-4" style="left: 72%; top: 55%;"></div>
+              <div class="ann-point positive" id="pt-5" style="left: 75%; top: 60%;"></div>
+              <!-- Mask overlays -->
+              <svg class="ann-mask" id="mask-hand" viewBox="0 0 100 100" preserveAspectRatio="none">
+                <ellipse cx="36" cy="45" rx="10" ry="14" class="mask-hand"/>
+              </svg>
+              <svg class="ann-mask" id="mask-cup" viewBox="0 0 100 100" preserveAspectRatio="none">
+                <ellipse cx="73" cy="57" rx="8" ry="10" class="mask-target"/>
+              </svg>
+              <!-- Suggest modal -->
+              <div class="suggest-modal" id="suggest-modal">
+                <div class="suggest-modal-content">
+                  <h3 style="font-size: 1rem; font-weight: 600; margin-bottom: 0.25rem;">Suggested Optimal Frames</h3>
+                  <p style="font-size: 0.8125rem; color: #525252;">Select frame(s) to annotate. Higher scores indicate better quality.</p>
+                  <div class="suggest-grid">
+                    <div class="suggest-card" id="sug-1">
+                      <div class="suggest-thumb" style="background: linear-gradient(135deg, #2d5a3a, #1a3a5c);"></div>
+                      <div class="suggest-info">
+                        <span>&#9745; Frame 142</span>
+                        <span class="tag tag-green">87%</span>
+                      </div>
+                    </div>
+                    <div class="suggest-card selected" id="sug-2">
+                      <div class="suggest-thumb" style="background: linear-gradient(135deg, #1a3a5c, #5a4a2d);"></div>
+                      <div class="suggest-info">
+                        <span>&#9745; Frame 891</span>
+                        <span class="tag tag-green">92%</span>
+                      </div>
+                    </div>
+                    <div class="suggest-card" id="sug-3">
+                      <div class="suggest-thumb" style="background: linear-gradient(135deg, #5a4a2d, #2d5a3a);"></div>
+                      <div class="suggest-info">
+                        <span>&#9744; Frame 1504</span>
+                        <span class="tag tag-blue">78%</span>
+                      </div>
+                    </div>
+                  </div>
+                  <div style="display: flex; justify-content: flex-end; gap: 0.5rem;">
+                    <button class="btn btn-secondary" id="btn-sug-close">Cancel</button>
+                    <button class="btn btn-primary" id="btn-sug-go">Start Annotating (1)</button>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+          <!-- Frame nav -->
+          <div class="tile" style="display: flex; align-items: center; gap: 1rem;">
+            <button class="btn btn-ghost" style="padding: 0.4rem;">&#9664;</button>
+            <span style="font-size: 0.8125rem; color: #525252;">Frame <strong id="frame-num">891</strong> / 2766</span>
+            <div style="flex: 1; height: 4px; background: #e0e0e0; border-radius: 2px; position: relative;">
+              <div style="width: 32%; height: 100%; background: #0f62fe; border-radius: 2px;" id="frame-slider"></div>
+            </div>
+            <button class="btn btn-ghost" style="padding: 0.4rem;">&#9654;</button>
+          </div>
+          <button class="btn btn-ghost suggest-btn" id="btn-suggest" style="margin-top: 0.5rem;">
+            &#128202; Suggest Optimal Frames
+          </button>
+        </div>
+        <div class="ann-sidebar">
+          <div class="tile">
+            <h3 style="font-size: 1rem; font-weight: 600; margin-bottom: 0.75rem;">&#128065; Objects</h3>
+            <div style="margin-bottom: 0.75rem;">
+              <div class="form-field">
+                <label>Object name</label>
+                <input type="text" id="obj-input" placeholder="e.g., hand, cup" value="">
+              </div>
+              <div style="display: flex; align-items: center; gap: 0.5rem; margin-top: 0.5rem; font-size: 0.8125rem;">
+                <span id="target-check">&#9744;</span> Mark as <u style="text-decoration-style: dotted; cursor: help;" title="The object you want to detect gaze/overlap against">target object</u>
+              </div>
+              <div style="display: flex; gap: 0.5rem; margin-top: 0.75rem;">
+                <button class="btn btn-secondary" style="font-size: 0.8125rem; padding: 0.3rem 0.75rem;" id="btn-add-obj">+ Add</button>
+                <button class="btn btn-primary" style="font-size: 0.8125rem; padding: 0.3rem 0.75rem;" id="btn-save-pts">&#128190; Save</button>
+              </div>
+            </div>
+            <div id="object-list">
+              <!-- populated by script -->
+            </div>
+            <div id="target-nudge" style="display: none; margin-top: 0.75rem; padding: 0.75rem; background: #edf5ff; border-left: 3px solid #0f62fe; font-size: 0.8125rem; color: #525252;">
+              Mark at least one object as a target to enable gaze detection and ELAN export.
+            </div>
+          </div>
+          <div class="tile">
+            <h3 style="font-size: 1rem; font-weight: 600; margin-bottom: 0.5rem;">Point Mode</h3>
+            <div style="display: flex; gap: 0.5rem;">
+              <button class="btn btn-primary" style="font-size: 0.8125rem; padding: 0.3rem 0.75rem;">+ Positive</button>
+              <button class="btn btn-secondary" style="font-size: 0.8125rem; padding: 0.3rem 0.75rem;">- Negative</button>
+            </div>
+          </div>
+          <button class="btn btn-primary" id="btn-to-process" style="width: 100%; justify-content: center;">
+            Process &#8594;
+          </button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Step 4: Processing -->
+    <div class="step" id="step-process">
+      <div class="proc-layout">
+        <h2 style="font-size: 1.25rem; font-weight: 600; margin-bottom: 1rem;">&#9881; Processing...</h2>
+        <div class="tile" style="padding: 0; overflow: hidden; margin-bottom: 1.5rem;">
+          <div class="proc-preview">
+            <div class="proc-overlay"></div>
+            <svg class="proc-mask-anim" id="proc-mask" viewBox="0 0 100 100" preserveAspectRatio="none">
+              <ellipse cx="36" cy="45" rx="10" ry="14" fill="#42be65"/>
+              <ellipse cx="73" cy="57" rx="8" ry="10" fill="#0f62fe"/>
+            </svg>
+            <div class="proc-frame-counter" id="proc-counter">Frame 0 / 2766</div>
+          </div>
+        </div>
+        <div class="progress-bar"><div class="fill" id="proc-progress"></div></div>
+        <p style="font-size: 0.875rem; color: #525252;" id="proc-status">Initializing SAM2 model...</p>
+        <div class="proc-stats">
+          <div class="tile stat-card"><div class="value" id="stat-frames">0</div><div class="label">Frames processed</div></div>
+          <div class="tile stat-card"><div class="value" id="stat-fps">--</div><div class="label">Frames/sec</div></div>
+          <div class="tile stat-card"><div class="value" id="stat-overlaps">0</div><div class="label">Overlaps detected</div></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Step 5: Results -->
+    <div class="step" id="step-results">
+      <div class="results-layout">
+        <div class="results-header">
+          <h2>&#9989; Processing Complete</h2>
+          <span class="tag tag-green">2766 frames</span>
+        </div>
+        <div class="tile" style="padding: 0; overflow: hidden; margin-bottom: 1.5rem;">
+          <div class="results-preview">
+            <div style="width: 100%; height: 100%; background: linear-gradient(135deg, #1a3a5c, #2d5a3a, #5a4a2d); position: relative;">
+              <svg viewBox="0 0 100 100" preserveAspectRatio="none" style="position: absolute; inset: 0; width: 100%; height: 100%; opacity: 0.4;">
+                <ellipse cx="36" cy="45" rx="10" ry="14" fill="#42be65"/>
+                <ellipse cx="73" cy="57" rx="8" ry="10" fill="#0f62fe"/>
+              </svg>
+            </div>
+            <div class="overlay-text">Annotated video preview</div>
+          </div>
+        </div>
+        <div class="export-grid">
+          <div class="tile export-card" id="dl-video">
+            <div class="icon">&#127909;</div>
+            <h4>Annotated Video</h4>
+            <p>MP4 with mask overlay</p>
+            <button class="btn btn-primary" style="font-size: 0.75rem; padding: 0.3rem 0.75rem;">Download</button>
+          </div>
+          <div class="tile export-card" id="dl-csv">
+            <div class="icon">&#128202;</div>
+            <h4>CSV Data</h4>
+            <p>Frame-by-frame coordinates</p>
+            <button class="btn btn-primary" style="font-size: 0.75rem; padding: 0.3rem 0.75rem;">Download</button>
+          </div>
+          <div class="tile export-card" id="dl-elan">
+            <div class="icon">&#128196;</div>
+            <h4>ELAN Timeline</h4>
+            <p>Overlap events for ELAN</p>
+            <button class="btn btn-primary" style="font-size: 0.75rem; padding: 0.3rem 0.75rem;">Download</button>
+          </div>
+        </div>
+        <div class="tile" style="text-align: center; padding: 2rem;">
+          <p style="font-size: 1.125rem; font-weight: 600; color: #198038; margin-bottom: 0.5rem;">&#10003; All exports ready</p>
+          <p style="font-size: 0.875rem; color: #525252;">3 objects tracked across 2766 frames &bull; 47 overlap events detected</p>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Cursor -->
+  <div class="cursor" id="cursor" style="left: 50%; top: 50%;">
+    <svg viewBox="0 0 24 24"><path d="M5 3l14 8-6 2-3 6z" fill="#161616" stroke="#fff" stroke-width="1.5"/></svg>
+    <div class="click-ring" style="display:none;"></div>
+  </div>
+
+  <!-- Narration -->
+  <div class="narration">
+    <span class="step-badge" id="narr-badge">INTRO</span>
+    <span class="text" id="narr-text">Welcome to EnvisionObjectAnnotator</span>
+    <div class="progress">
+      <div class="dot active" id="dot-0"></div>
+      <div class="dot" id="dot-1"></div>
+      <div class="dot" id="dot-2"></div>
+      <div class="dot" id="dot-3"></div>
+      <div class="dot" id="dot-4"></div>
+    </div>
+  </div>
+
+  <button class="btn btn-ghost replay-btn" onclick="startDemo()" id="replay-btn" style="display:none;">&#8634; Replay</button>
+</div>
+
+<script>
+const cursor = document.getElementById('cursor');
+const clickRing = cursor.querySelector('.click-ring');
+let currentStep = 0;
+
+function moveCursor(x, y) {
+  cursor.style.left = x + 'px';
+  cursor.style.top = y + 'px';
+}
+
+function clickAt(x, y) {
+  return new Promise(resolve => {
+    moveCursor(x, y);
+    setTimeout(() => {
+      clickRing.style.display = 'block';
+      clickRing.style.animation = 'none';
+      void clickRing.offsetWidth;
+      clickRing.style.animation = 'clickPulse 0.4s ease-out forwards';
+      setTimeout(() => { clickRing.style.display = 'none'; resolve(); }, 400);
+    }, 900);
+  });
+}
+
+function wait(ms) { return new Promise(r => setTimeout(r, ms)); }
+
+function showStep(id) {
+  document.querySelectorAll('.step').forEach(s => s.classList.remove('active'));
+  document.getElementById(id).classList.add('active');
+}
+
+function setNarration(badge, text, stepIdx) {
+  document.getElementById('narr-badge').textContent = badge;
+  document.getElementById('narr-text').textContent = text;
+  for (let i = 0; i < 5; i++) {
+    const dot = document.getElementById('dot-' + i);
+    dot.className = 'dot' + (i < stepIdx ? ' done' : i === stepIdx ? ' active' : '');
+  }
+}
+
+function getRect(id) {
+  const el = document.getElementById(id);
+  if (!el) return { x: 400, y: 300 };
+  const r = el.getBoundingClientRect();
+  return { x: r.left + r.width / 2, y: r.top + r.height / 2 };
+}
+
+function typeText(el, text, speed = 60) {
+  return new Promise(resolve => {
+    el.value = '';
+    let i = 0;
+    const iv = setInterval(() => {
+      el.value += text[i++];
+      if (i >= text.length) { clearInterval(iv); resolve(); }
+    }, speed);
+  });
+}
+
+async function startDemo() {
+  document.getElementById('replay-btn').style.display = 'none';
+  currentStep = 0;
+
+  // Reset all states
+  document.querySelectorAll('.ann-point').forEach(p => p.classList.remove('visible'));
+  document.querySelectorAll('.ann-mask').forEach(m => m.classList.remove('visible'));
+  document.getElementById('suggest-modal').classList.remove('visible');
+  document.getElementById('upload-zone').className = 'upload-zone';
+  document.getElementById('upload-status').textContent = '';
+  document.getElementById('video-placeholder').className = 'video-placeholder';
+  document.getElementById('video-controls').classList.remove('visible');
+  document.getElementById('object-list').innerHTML = '';
+  document.getElementById('target-nudge').style.display = 'none';
+  document.getElementById('obj-input').value = '';
+  document.getElementById('target-check').textContent = '☐';
+  document.getElementById('proc-progress').style.width = '0%';
+  document.getElementById('proc-mask').classList.remove('visible');
+
+  // === STEP 1: INTRO ===
+  showStep('step-intro');
+  setNarration('INTRO', 'Welcome to EnvisionObjectAnnotator — a tool for video object tracking and gaze detection.', 0);
+  moveCursor(window.innerWidth / 2, window.innerHeight / 2);
+  await wait(3000);
+
+  setNarration('INTRO', 'The tool offers point-based annotation, SAM2 tracking, overlap detection, and smart frame suggestion.', 0);
+  await wait(3000);
+
+  setNarration('INTRO', "Let's start by uploading a video...", 0);
+  const startPos = getRect('btn-start');
+  await clickAt(startPos.x, startPos.y);
+  await wait(600);
+
+  // === STEP 2: CONFIG ===
+  showStep('step-config');
+  setNarration('CONFIG', 'Upload your video file. Supported formats: MP4, AVI, MOV.', 1);
+  await wait(1500);
+
+  // Animate upload
+  const uploadPos = getRect('upload-zone');
+  await clickAt(uploadPos.x, uploadPos.y);
+  document.getElementById('upload-zone').classList.add('active');
+  document.getElementById('upload-status').textContent = 'Uploading experiment_recording.mp4...';
+  await wait(1500);
+  document.getElementById('upload-zone').classList.remove('active');
+  document.getElementById('upload-zone').classList.add('done');
+  document.getElementById('upload-status').innerHTML = '&#10003; experiment_recording.mp4 (2:30, 1920x1080)';
+  document.getElementById('video-placeholder').classList.add('loaded');
+  document.getElementById('video-placeholder').innerHTML = '<span style="font-size: 1.5rem; color: #a8a8a8;">&#9654;</span><span style="color: #a8a8a8; font-size: 0.8125rem;">experiment_recording.mp4</span>';
+  document.getElementById('video-controls').classList.add('visible');
+  await wait(1500);
+
+  setNarration('CONFIG', 'Configure processing settings. Enable bidirectional propagation to track in both directions.', 1);
+  const bidirPos = getRect('toggle-bidir');
+  await clickAt(bidirPos.x, bidirPos.y);
+  document.getElementById('toggle-bidir').classList.add('on');
+  await wait(2000);
+
+  setNarration('CONFIG', 'Extract frames from the video, then proceed to annotation.', 1);
+  const extractPos = getRect('btn-extract');
+  await clickAt(extractPos.x, extractPos.y);
+  await wait(1000);
+  document.getElementById('btn-extract').textContent = '✓ 2766 frames extracted';
+  document.getElementById('btn-extract').classList.remove('btn-primary');
+  document.getElementById('btn-extract').classList.add('btn-secondary');
+  await wait(1500);
+
+  const toAnnPos = getRect('btn-to-annotate');
+  await clickAt(toAnnPos.x, toAnnPos.y);
+  await wait(600);
+
+  // === STEP 3: ANNOTATION ===
+  showStep('step-annotate');
+  setNarration('ANNOTATE', 'Use "Suggest Optimal Frames" to find the best frames for annotation.', 2);
+  await wait(1500);
+
+  const suggestPos = getRect('btn-suggest');
+  await clickAt(suggestPos.x, suggestPos.y);
+  await wait(800);
+  document.getElementById('suggest-modal').classList.add('visible');
+  await wait(2000);
+
+  setNarration('ANNOTATE', 'The tool scores frames by sharpness, brightness, and visual diversity. Select the best one.', 2);
+  await wait(2000);
+
+  const sugGoPos = getRect('btn-sug-go');
+  await clickAt(sugGoPos.x, sugGoPos.y);
+  document.getElementById('suggest-modal').classList.remove('visible');
+  await wait(1000);
+
+  setNarration('ANNOTATE', 'Add objects to annotate. Type a name and click "Add".', 2);
+  const inputEl = document.getElementById('obj-input');
+  const inputPos = getRect('obj-input');
+  await clickAt(inputPos.x, inputPos.y);
+  await wait(400);
+  await typeText(inputEl, 'hand');
+  await wait(400);
+  const addPos = getRect('btn-add-obj');
+  await clickAt(addPos.x, addPos.y);
+  document.getElementById('object-list').innerHTML = '<div class="object-item selected"><span class="name">hand <span class="tag tag-gray">0 pts</span></span></div>';
+  document.getElementById('target-nudge').style.display = 'block';
+  await wait(1000);
+
+  setNarration('ANNOTATE', 'Click on the frame to place positive points on the hand.', 2);
+  const canvas = document.getElementById('ann-canvas');
+  const cr = canvas.getBoundingClientRect();
+
+  // Point 1
+  await clickAt(cr.left + cr.width * 0.35, cr.top + cr.height * 0.40);
+  document.getElementById('pt-1').classList.add('visible');
+  await wait(600);
+
+  // Point 2
+  await clickAt(cr.left + cr.width * 0.38, cr.top + cr.height * 0.50);
+  document.getElementById('pt-2').classList.add('visible');
+  await wait(600);
+
+  // Negative point
+  setNarration('ANNOTATE', 'Add a negative point to exclude the background.', 2);
+  await clickAt(cr.left + cr.width * 0.42, cr.top + cr.height * 0.30);
+  document.getElementById('pt-3').classList.add('visible');
+  await wait(800);
+
+  // Show mask
+  document.getElementById('mask-hand').classList.add('visible');
+  setNarration('ANNOTATE', 'SAM2 generates a mask preview in real-time. Looking good!', 2);
+  document.getElementById('object-list').innerHTML = '<div class="object-item selected"><span class="name">hand <span class="tag tag-gray">3 pts</span></span></div>';
+  await wait(2000);
+
+  // Save and add target object
+  const savePos = getRect('btn-save-pts');
+  await clickAt(savePos.x, savePos.y);
+  await wait(500);
+
+  setNarration('ANNOTATE', 'Now add a target object — required for gaze/overlap detection.', 2);
+  await clickAt(inputPos.x, inputPos.y);
+  await wait(300);
+  inputEl.value = '';
+  await typeText(inputEl, 'cup');
+  await wait(300);
+
+  // Check target
+  document.getElementById('target-check').textContent = '☑';
+  await wait(300);
+  await clickAt(addPos.x, addPos.y);
+  document.getElementById('object-list').innerHTML =
+    '<div class="object-item"><span class="name">hand <span class="tag tag-gray">3 pts</span></span></div>' +
+    '<div class="object-item selected"><span class="name">cup <span class="tag tag-cyan">Target</span> <span class="tag tag-gray">0 pts</span></span></div>';
+  document.getElementById('target-nudge').style.display = 'none';
+  await wait(1000);
+
+  // Annotate target
+  setNarration('ANNOTATE', 'Click on the target cup to place annotation points.', 2);
+  await clickAt(cr.left + cr.width * 0.72, cr.top + cr.height * 0.55);
+  document.getElementById('pt-4').classList.add('visible');
+  await wait(600);
+  await clickAt(cr.left + cr.width * 0.75, cr.top + cr.height * 0.60);
+  document.getElementById('pt-5').classList.add('visible');
+  document.getElementById('mask-cup').classList.add('visible');
+  document.getElementById('object-list').innerHTML =
+    '<div class="object-item"><span class="name">hand <span class="tag tag-gray">3 pts</span></span></div>' +
+    '<div class="object-item selected"><span class="name">cup <span class="tag tag-cyan">Target</span> <span class="tag tag-gray">2 pts</span></span></div>';
+  await wait(1500);
+
+  setNarration('ANNOTATE', 'Both objects annotated. Ready to process!', 2);
+  await wait(1500);
+
+  const procBtnPos = getRect('btn-to-process');
+  await clickAt(procBtnPos.x, procBtnPos.y);
+  await wait(600);
+
+  // === STEP 4: PROCESSING ===
+  showStep('step-process');
+  setNarration('PROCESS', 'SAM2 is tracking objects across all 2766 frames...', 3);
+  await wait(1000);
+
+  document.getElementById('proc-mask').classList.add('visible');
+
+  // Animate progress
+  const totalSteps = 20;
+  for (let i = 1; i <= totalSteps; i++) {
+    const pct = Math.round((i / totalSteps) * 100);
+    const frames = Math.round((i / totalSteps) * 2766);
+    const fps = (12 + Math.random() * 6).toFixed(1);
+    const overlaps = Math.round((i / totalSteps) * 47);
+
+    document.getElementById('proc-progress').style.width = pct + '%';
+    document.getElementById('proc-counter').textContent = `Frame ${frames} / 2766`;
+    document.getElementById('stat-frames').textContent = frames;
+    document.getElementById('stat-fps').textContent = fps;
+    document.getElementById('stat-overlaps').textContent = overlaps;
+
+    if (i === 5) {
+      document.getElementById('proc-status').textContent = 'Forward propagation: tracking hand, target_cup...';
+      setNarration('PROCESS', 'Forward propagation from reference frame — tracking both objects.', 3);
+    }
+    if (i === 12) {
+      document.getElementById('proc-status').textContent = 'Backward propagation: filling frames before reference...';
+      setNarration('PROCESS', 'Bidirectional mode: now tracking backward to fill earlier frames.', 3);
+    }
+    if (i === 18) {
+      document.getElementById('proc-status').textContent = 'Generating exports...';
+      setNarration('PROCESS', 'Generating annotated video, CSV data, and ELAN timeline...', 3);
+    }
+    await wait(250);
+  }
+
+  document.getElementById('proc-status').textContent = 'Complete!';
+  setNarration('PROCESS', 'Processing complete! 2766 frames processed, 47 overlap events detected.', 3);
+  await wait(2500);
+
+  // === STEP 5: RESULTS ===
+  showStep('step-results');
+  setNarration('RESULTS', 'Download your results: annotated video, CSV data, and ELAN timeline.', 4);
+  await wait(2000);
+
+  const csvPos = getRect('dl-csv');
+  await clickAt(csvPos.x, csvPos.y);
+  setNarration('RESULTS', 'CSV contains frame-by-frame coordinates and overlap data for statistical analysis.', 4);
+  await wait(2000);
+
+  const elanPos = getRect('dl-elan');
+  await clickAt(elanPos.x, elanPos.y);
+  setNarration('RESULTS', 'ELAN file contains timed overlap events — ready to open in ELAN for further coding.', 4);
+  await wait(3000);
+
+  setNarration('DONE', 'That\'s EnvisionObjectAnnotator! Annotate, track, detect, export. Ready to try it?', 4);
+  document.getElementById('replay-btn').style.display = 'block';
+  moveCursor(window.innerWidth / 2, window.innerHeight / 2);
+}
+
+// Auto-start after small delay
+setTimeout(startDemo, 1000);
+</script>
+</body>
+</html>

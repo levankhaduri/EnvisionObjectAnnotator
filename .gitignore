@@ -1,2 +1,12 @@
 extra/
 *.pt
+.DS_Store
+sam2/
+EdgeTAM/
+/.venv/
+backend/.venv/
+frontend/node_modules/
+backend/data/
+__pycache__/
+*.pyc
+.vscode/
