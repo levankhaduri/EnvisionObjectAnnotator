@@ -1,6 +1,6 @@
-import React, { useEffect, useState } from "react";
+import React, { useEffect, useState, useRef } from "react";
 import { Link } from "react-router-dom";
-import { fetchResults, getResultDownloadUrl } from "../api.js";
+import { fetchResults, getResultDownloadUrl, getResultDownloadAllUrl } from "../api.js";
 import {
   Button,
   Grid,
@@ -49,6 +49,7 @@ export default function ResultsPage() {
   const [profiling, setProfiling] = useState(null);
   const [status, setStatus] = useState("Loading results...");
   const [statusKind, setStatusKind] = useState("info");
+  const autoDownloadTriggered = useRef(false);
 
   useEffect(() => {
     const stored = localStorage.getItem("eoa_session");
@@ -97,6 +98,19 @@ export default function ResultsPage() {
       if (timer) clearInterval(timer);
     };
   }, [sessionId, csvPending]);
+
+  // Auto-download ZIP when all results are ready
+  useEffect(() => {
+    if (
+      statusKind === "success" &&
+      sessionId &&
+      !csvPending &&
+      !autoDownloadTriggered.current
+    ) {
+      autoDownloadTriggered.current = true;
+      window.open(getResultDownloadAllUrl(sessionId), "_blank");
+    }
+  }, [statusKind, sessionId, csvPending]);
 
   const formatSeconds = (value) => {
     if (typeof value !== "number" || Number.isNaN(value)) return "---";
@@ -189,9 +203,20 @@ export default function ResultsPage() {
             {/* Download section */}
             <Column lg={10} md={5} sm={4}>
               <Tile style={{ marginBottom: "1rem" }}>
-                <h2 style={{ fontSize: "1.25rem", fontWeight: 600, marginBottom: "1.5rem", display: "flex", alignItems: "center", gap: "0.5rem" }}>
-                  <Download size={20} /> Download Files
-                </h2>
+                <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: "1.5rem" }}>
+                  <h2 style={{ fontSize: "1.25rem", fontWeight: 600, display: "flex", alignItems: "center", gap: "0.5rem", margin: 0 }}>
+                    <Download size={20} /> Download Files
+                  </h2>
+                  <Button
+                    size="sm"
+                    kind="primary"
+                    renderIcon={Download}
+                    disabled={!Object.values(fileExists).some(v => v)}
+                    onClick={() => window.open(getResultDownloadAllUrl(sessionId), "_blank")}
+                  >
+                    Download All (ZIP)
+                  </Button>
+                </div>
 
                 <div style={{ display: "flex", flexDirection: "column", gap: "1rem" }}>
                   {/* Annotated Video */}
@@ -313,6 +338,43 @@ export default function ResultsPage() {
                       renderIcon={Download}
                       disabled={!fileExists.elan}
                       onClick={() => window.open(getResultDownloadUrl(sessionId, "elan"), "_blank")}
+                    >
+                      Download
+                    </Button>
+                  </div>
+
+                  {/* Segmentation Masks */}
+                  <div style={{
+                    padding: "1rem",
+                    borderRadius: "4px",
+                    border: "1px solid #e0e0e0",
+                    display: "flex",
+                    alignItems: "center",
+                    justifyContent: "space-between"
+                  }}>
+                    <div style={{ display: "flex", alignItems: "center", gap: "1rem" }}>
+                      <div style={{
+                        width: "40px",
+                        height: "40px",
+                        borderRadius: "8px",
+                        backgroundColor: "#e5f6ff",
+                        display: "flex",
+                        alignItems: "center",
+                        justifyContent: "center"
+                      }}>
+                        <DataBase size={20} style={{ color: "#0043ce" }} />
+                      </div>
+                      <div>
+                        <div style={{ fontWeight: 600 }}>Segmentation Masks</div>
+                        <div style={{ fontSize: "0.75rem", color: "#6f6f6f" }}>JSON with RLE-encoded masks</div>
+                      </div>
+                    </div>
+                    <Button
+                      size="sm"
+                      kind="secondary"
+                      renderIcon={Download}
+                      disabled={!fileExists.masks_json}
+                      onClick={() => window.open(getResultDownloadUrl(sessionId, "masks_json"), "_blank")}
                     >
                       Download
                     </Button>

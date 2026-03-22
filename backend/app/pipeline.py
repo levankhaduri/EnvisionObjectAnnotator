@@ -2160,16 +2160,8 @@ class UltraOptimizedProcessor:
             print("No targets found - skipping ELAN export")
             return
 
-        try:
-            cap = cv2.VideoCapture(video_path)
-            actual_fps = cap.get(cv2.CAP_PROP_FPS)
-            total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
-            cap.release()
-
-            if abs(fps - actual_fps) > 1.0:
-                fps = actual_fps
-        except Exception:
-            pass
+        # FPS is now computed as effective_fps (extracted_frames / duration)
+        # upstream, so no need to re-read from the original video file.
 
         summary = self.overlap_tracker.get_overlap_summary()
 
@@ -2385,3 +2377,100 @@ class UltraOptimizedProcessor:
                         pass
 
         print(f"CSV exported: {csv_path}")
+
+    @staticmethod
+    def _rle_encode(mask):
+        """Run-length encode a binary mask (COCO-style)."""
+        flat = mask.astype(np.uint8).ravel(order="F")
+        diffs = np.diff(flat, prepend=0, append=0)
+        change_indices = np.where(diffs != 0)[0]
+        counts = np.diff(np.concatenate(([0], change_indices, [len(flat)])))
+        # If mask starts with 1, prepend a 0-length run of 0s
+        if flat[0] == 1:
+            counts = np.concatenate(([0], counts))
+        return {"size": [int(mask.shape[0]), int(mask.shape[1])], "counts": counts.tolist()}
+
+    def export_masks_json(self, results, object_names, output_path, progress_callback=None):
+        """Export segmentation masks as JSON with RLE encoding."""
+        import json as _json
+
+        if not results:
+            print("No results to export masks.")
+            return
+
+        roi_info = getattr(self, "roi_info", None)
+        roi_x0 = int(roi_info["x0"]) if roi_info else 0
+        roi_y0 = int(roi_info["y0"]) if roi_info else 0
+        roi_w = int(roi_info["x1"] - roi_info["x0"] + 1) if roi_info else None
+        roi_h = int(roi_info["y1"] - roi_info["y0"] + 1) if roi_info else None
+
+        frames_data = {}
+        total_frames = len(results)
+        processed = 0
+
+        for frame_idx in sorted(results.keys()):
+            frame_results = self._get_frame_results(results, frame_idx)
+            frame_objects = {}
+
+            for obj_id, mask in frame_results.items():
+                mask = self._decompress_mask(mask)
+                if mask is None:
+                    continue
+                if hasattr(mask, "shape") and len(mask.shape) == 3:
+                    mask = mask.squeeze()
+
+                # Resize to ROI dimensions if needed
+                if roi_info and mask is not None and roi_w and roi_h and mask.shape != (roi_h, roi_w):
+                    try:
+                        mask = cv2.resize(mask.astype(np.float32), (roi_w, roi_h), interpolation=cv2.INTER_LINEAR) > 0.5
+                    except Exception:
+                        pass
+
+                mask = mask.astype(np.uint8)
+                ys, xs = np.where(mask > 0)
+
+                if ys.size == 0:
+                    continue
+
+                x0, y0 = int(xs.min()), int(ys.min())
+                x1, y1 = int(xs.max()), int(ys.max())
+                w, h = (x1 - x0 + 1), (y1 - y0 + 1)
+                cx = float(xs.mean())
+                cy = float(ys.mean())
+                area = int(ys.size)
+
+                if roi_info:
+                    x0 += roi_x0
+                    y0 += roi_y0
+                    cx += roi_x0
+                    cy += roi_y0
+
+                obj_name = object_names.get(obj_id, f"Object_{obj_id}")
+                frame_objects[str(obj_id)] = {
+                    "name": obj_name,
+                    "bbox": [x0, y0, w, h],
+                    "centroid": [round(cx, 2), round(cy, 2)],
+                    "area": area,
+                    "mask_rle": self._rle_encode(mask),
+                }
+
+            if frame_objects:
+                frames_data[str(frame_idx)] = frame_objects
+
+            processed += 1
+            if progress_callback and (processed % 100 == 0 or processed == total_frames):
+                try:
+                    progress_callback(processed, total_frames)
+                except Exception:
+                    pass
+
+        output = {
+            "object_names": {str(k): v for k, v in object_names.items()},
+            "total_frames": total_frames,
+            "frames": frames_data,
+        }
+
+        with open(output_path, "w", encoding="utf-8") as f:
+            _json.dump(output, f)
+
+        print(f"Masks JSON exported: {output_path}")

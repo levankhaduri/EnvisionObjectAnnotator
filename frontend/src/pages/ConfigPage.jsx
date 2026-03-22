@@ -102,7 +102,7 @@ export default function ConfigPage() {
   const [speedPreset, setSpeedPreset] = useState("slow");
   const [modelKey, setModelKey] = useState("auto");
   const [models, setModels] = useState([
-    { key: "auto", label: "Auto (largest available)", available: true },
+    { key: "auto", label: "Auto (recommended: Base+)", available: true },
   ]);
   const [modelsLoading, setModelsLoading] = useState(true);
   const [modelsError, setModelsError] = useState(null);
@@ -233,7 +233,7 @@ export default function ConfigPage() {
       .then((data) => {
         const apiModels = data.models || [];
         setModels([
-          { key: "auto", label: "Auto (largest available)", available: true },
+          { key: "auto", label: "Auto (recommended: Base+)", available: true },
           ...apiModels,
         ]);
         setModelsLoading(false);

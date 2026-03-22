@@ -68,6 +68,8 @@ MODEL_CATALOG = [
     },
 ]
 
+DEFAULT_MODEL_KEY = "sam2.1_hiera_b+"
+
 _IMAGE_PREDICTOR_CACHE = {}
 _VIDEO_PREDICTOR_CACHE = None  # (cache_key, predictor, device) or None
 
@@ -134,6 +136,16 @@ def _select_model_entry(model_key=None):
                 return item
         raise ValueError(f"Unknown model key: {model_key}")
 
+    # Try the recommended default model first
+    for item in MODEL_CATALOG:
+        if item["key"] == DEFAULT_MODEL_KEY:
+            config_path = item.get("config")
+            config_ok = config_path.exists() if isinstance(config_path, Path) else True
+            if item["checkpoint"].exists() and config_ok:
+                return item
+            break
+
+    # Fall back to first available model
     for item in MODEL_CATALOG:
         config_path = item.get("config")
         config_ok = config_path.exists() if isinstance(config_path, Path) else True
@@ -486,6 +498,11 @@ class HeadlessProcessor:
             results, object_names, output_path, progress_callback=progress_callback
         )
 
+    def save_masks_json(self, results, object_names, output_path, progress_callback=None):
+        return self._processor.export_masks_json(
+            results, object_names, output_path, progress_callback=progress_callback
+        )
+
     def cleanup_mask_store(self):
         return self._processor.cleanup_mask_store()
 
@@ -668,7 +685,13 @@ def run_processing(session_id):
     auto_tune = bool(config.get("auto_tune", True))
     auto_tune_info = None
     fps = None
-    if "video_fps" in config:
+    # Prefer effective_fps (computed from actual extracted frames / duration)
+    if "effective_fps" in config:
+        try:
+            fps = float(config.get("effective_fps"))
+        except (TypeError, ValueError):
+            fps = None
+    if fps is None and "video_fps" in config:
         try:
             fps = float(config.get("video_fps"))
         except (TypeError, ValueError):
@@ -902,9 +925,20 @@ def run_processing(session_id):
         updated_config = {**config_state, "outputs": outputs_state, "outputs_meta": outputs_meta}
         state.update_session(session_id, config=updated_config)
 
+    def _export_masks(results_to_save, outputs, output_dir, video_stem, suffix=""):
+        """Export segmentation masks as JSON before mask store cleanup."""
+        try:
+            masks_path = output_dir / f"{video_stem}{suffix}_MASKS.json"
+            wrapped.save_masks_json(results_to_save, object_names, str(masks_path))
+            outputs["masks_json"] = str(masks_path)
+        except Exception as exc:
+            _log_debug(f"masks json export error: {exc}")
+            _log_trace()
+
     def _start_csv_export(results_to_save, outputs, output_dir, video_stem, suffix=""):
         if not export_csv:
             _update_outputs_meta(csv_status="disabled", csv_progress=0.0, outputs_override=outputs)
+            _export_masks(results_to_save, outputs, output_dir, video_stem, suffix)
             try:
                 wrapped.cleanup_mask_store()
             except Exception:
@@ -930,6 +964,7 @@ def run_processing(session_id):
                     str(csv_path),
                     progress_callback=_csv_progress,
                 )
+                _export_masks(results_to_save, outputs, output_dir, video_stem, suffix)
                 outputs_done = {**outputs, "csv": str(csv_path)}
                 _update_outputs_meta(
                     csv_status="completed",
