@@ -673,9 +673,18 @@ def add_annotation_points(payload: AnnotationPayload):
     existing["objects"][payload.object_name] = [
         {"x": p.x, "y": p.y, "label": p.label} for p in payload.points
     ]
+    # Save bounding box if provided
+    if payload.bbox:
+        existing.setdefault("bboxes", {})
+        existing["bboxes"][payload.object_name] = {
+            "x1": payload.bbox.x1, "y1": payload.bbox.y1,
+            "x2": payload.bbox.x2, "y2": payload.bbox.y2,
+        }
     prev_name = payload.previous_object_name
     if prev_name and prev_name != payload.object_name:
         existing["objects"].pop(prev_name, None)
+        if "bboxes" in existing:
+            existing["bboxes"].pop(prev_name, None)
     frame_file.write_text(json.dumps(existing, indent=2))
     config = session.config or {}
     if config.get("reference_frame") != payload.frame_index:
@@ -738,11 +747,15 @@ def test_mask(payload: AnnotationPayload):
     ilog.log_test_mask(payload.session_id, payload.frame_index, payload.object_name, len(payload.points))
 
     try:
+        bbox_dict = None
+        if payload.bbox:
+            bbox_dict = payload.bbox.model_dump()
         preview_path = test_mask_preview(
             payload.session_id,
             payload.frame_index,
             payload.object_name,
             [p.model_dump() for p in payload.points],
+            bbox=bbox_dict,
         )
     except Exception as exc:
         raise HTTPException(status_code=500, detail=str(exc))

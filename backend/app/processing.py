@@ -373,13 +373,13 @@ def _auto_tune_settings(frame_count, predictor, config, log_cb=None, fps=None):
     }
 
 
-def test_mask_preview(session_id, frame_index, object_name, points):
+def test_mask_preview(session_id, frame_index, object_name, points, bbox=None):
     """Generate a mask preview using video predictor on a single frame (fast)."""
     import tempfile
     import shutil
 
     slog = get_session_logger(session_id)
-    slog.info("test_mask_preview: frame=%d obj=%s pts=%d", frame_index, object_name, len(points))
+    slog.info("test_mask_preview: frame=%d obj=%s pts=%d bbox=%s", frame_index, object_name, len(points), bbox is not None)
     session = state.get_session(session_id)
     frames_dir = SESSIONS_DIR / session_id / "frames"
     if not frames_dir.exists():
@@ -405,7 +405,12 @@ def test_mask_preview(session_id, frame_index, object_name, points):
     try:
         # Copy single frame to temp dir as 00000.jpg (video predictor expects this format)
         temp_frame_path = Path(temp_dir) / "00000.jpg"
-        shutil.copy2(frame_path, temp_frame_path)
+        enhance_target = bool((session.config or {}).get("enhance_target", False))
+        if enhance_target:
+            enhanced = UltraOptimizedProcessor._enhance_red_channel(frame)
+            cv2.imwrite(str(temp_frame_path), enhanced)
+        else:
+            shutil.copy2(frame_path, temp_frame_path)
 
         predictor, device = _build_predictor(use_mps=use_mps, model_key=model_key)
 
@@ -422,13 +427,18 @@ def test_mask_preview(session_id, frame_index, object_name, points):
             points_arr = np.array(coords_list, dtype=np.float32)
             labels_arr = np.array(labels_list, dtype=np.int32)
 
-            _, out_obj_ids, out_mask_logits = predictor.add_new_points_or_box(
+            sam_kwargs = dict(
                 inference_state=inference_state,
                 frame_idx=0,  # Always 0 since temp dir has only 1 frame
                 obj_id=1,
                 points=points_arr,
                 labels=labels_arr,
             )
+            if bbox:
+                sam_kwargs["box"] = np.array(
+                    [bbox["x1"], bbox["y1"], bbox["x2"], bbox["y2"]], dtype=np.float32
+                )
+            _, out_obj_ids, out_mask_logits = predictor.add_new_points_or_box(**sam_kwargs)
 
             # Get the mask from the logits
             mask_logits = out_mask_logits[0]  # First object
@@ -466,13 +476,14 @@ class HeadlessProcessor:
     def __init__(self, processor):
         self._processor = processor
 
-    def process(self, points_dict, labels_dict, object_names, multiframe_data=None, progress_callback=None):
+    def process(self, points_dict, labels_dict, object_names, multiframe_data=None, bboxes_dict=None, progress_callback=None):
         return self._processor.process_video_with_memory_management(
             points_dict,
             labels_dict,
             object_names,
             debug=True,
             multiframe_data=multiframe_data,
+            bboxes_dict=bboxes_dict,
             progress_callback=progress_callback,
         )
 
@@ -529,9 +540,12 @@ def _load_reference_annotations(session_id, reference_frame):
     if not objects:
         raise ValueError("No objects annotated")
 
+    bboxes_data = data.get("bboxes", {})
+
     points_dict = {}
     labels_dict = {}
     object_names = {}
+    bboxes_dict = {}
     for idx, (name, points) in enumerate(objects.items(), start=1):
         if not points:
             continue
@@ -542,11 +556,16 @@ def _load_reference_annotations(session_id, reference_frame):
         object_names[idx] = name
         points_dict[idx] = coords
         labels_dict[idx] = labels
+        if name in bboxes_data:
+            bb = bboxes_data[name]
+            bboxes_dict[idx] = np.array(
+                [bb["x1"], bb["y1"], bb["x2"], bb["y2"]], dtype=np.float32
+            )
 
     if not points_dict:
         raise ValueError("No valid points found for reference frame")
 
-    return points_dict, labels_dict, object_names
+    return points_dict, labels_dict, object_names, bboxes_dict
 
 
 def _load_multiframe_annotations(session_id):
@@ -564,6 +583,7 @@ def _load_multiframe_annotations(session_id):
         raise FileNotFoundError("No annotations directory found")
 
     frame_annotations = {}
+    frame_bboxes = {}
     global_object_names: set[str] = set()
 
     for frame_file in sorted(annotations_dir.glob("frame_*.json")):
@@ -573,6 +593,7 @@ def _load_multiframe_annotations(session_id):
             objects = data.get("objects", {})
             if objects:
                 frame_annotations[frame_idx] = objects
+                frame_bboxes[frame_idx] = data.get("bboxes", {})
                 global_object_names.update(objects.keys())
         except (ValueError, json.JSONDecodeError):
             continue
@@ -586,10 +607,12 @@ def _load_multiframe_annotations(session_id):
     }
 
     multiframe_data = {}
+    all_bboxes_dict = {}
     for frame_idx, objects in frame_annotations.items():
         points_dict = {}
         labels_dict = {}
         object_names = {}
+        bboxes_for_frame = frame_bboxes.get(frame_idx, {})
 
         for obj_name, points in objects.items():
             if not points:
@@ -603,6 +626,11 @@ def _load_multiframe_annotations(session_id):
             object_names[obj_id] = obj_name
             points_dict[obj_id] = coords
             labels_dict[obj_id] = labels
+            if obj_name in bboxes_for_frame:
+                bb = bboxes_for_frame[obj_name]
+                all_bboxes_dict[obj_id] = np.array(
+                    [bb["x1"], bb["y1"], bb["x2"], bb["y2"]], dtype=np.float32
+                )
 
         if points_dict:
             multiframe_data[frame_idx] = (points_dict, labels_dict, object_names)
@@ -610,7 +638,7 @@ def _load_multiframe_annotations(session_id):
     if not multiframe_data:
         raise ValueError("No valid points found in any annotated frame")
 
-    return multiframe_data, object_name_to_id
+    return multiframe_data, object_name_to_id, all_bboxes_dict
 
 
 def run_processing(session_id):
@@ -708,6 +736,7 @@ def run_processing(session_id):
     frame_stride = config.get("frame_stride")
     frame_interpolation = config.get("frame_interpolation")
     roi_enabled = bool(config.get("roi_enabled", False))
+    enhance_target = bool(config.get("enhance_target", False))
     try:
         roi_margin = float(config.get("roi_margin", 0.15))
     except (TypeError, ValueError):
@@ -748,7 +777,7 @@ def run_processing(session_id):
 
     try:
         _set_status(session_id, "initializing", 0.05, "Loading annotations")
-        mf_data, object_name_to_id = _load_multiframe_annotations(session_id)
+        mf_data, object_name_to_id, bboxes_dict = _load_multiframe_annotations(session_id)
 
         # Build global object names registry
         object_names = {obj_id: obj_name for obj_name, obj_id in object_name_to_id.items()}
@@ -849,6 +878,7 @@ def run_processing(session_id):
             process_start_frame=process_start_frame,
             process_end_frame=process_end_frame,
             enable_bidirectional=enable_bidirectional,
+            enhance_target=enhance_target,
         )
         wrapped = HeadlessProcessor(processor)
     except ImportError as exc:
@@ -991,7 +1021,7 @@ def run_processing(session_id):
             _set_status(session_id, "processing", min(pct, 0.85), f"Processing frames: {current}/{total}")
 
         mf_data = multiframe_data if is_multiframe else None
-        results = wrapped.process(points_dict, labels_dict, object_names, multiframe_data=mf_data, progress_callback=_frame_progress)
+        results = wrapped.process(points_dict, labels_dict, object_names, multiframe_data=mf_data, bboxes_dict=bboxes_dict, progress_callback=_frame_progress)
         if not results:
             _set_status(session_id, "error", 0.6, "Processing failed")
             _log_debug("processing failed: no results")

@@ -82,6 +82,10 @@ export default function AnnotationPage() {
   const [showSuggestions, setShowSuggestions] = useState(false);
   const [selectedSuggestions, setSelectedSuggestions] = useState(new Set());
   const [loadingSuggestions, setLoadingSuggestions] = useState(false);
+  const [annotationMode, setAnnotationMode] = useState("point"); // "point" or "bbox"
+  const [bboxDraw, setBboxDraw] = useState(null); // {startFx, startFy} while dragging
+  const [objectBboxes, setObjectBboxes] = useState({}); // {objectName: {x1,y1,x2,y2,fx1,fy1,fx2,fy2}}
+  const [targetFlowStep, setTargetFlowStep] = useState("frame"); // "frame" | "prompt" | "bbox" | "points" | null
   const annotationsCache = useRef(new Map());
   const maskCache = useRef(new Map());
   const imgRef = useRef(null);
@@ -231,6 +235,19 @@ export default function AnnotationPage() {
         annotationsCache.current.set(cacheKey, normalized);
         setFrameObjects(normalized);
         setObjectList(Object.keys(normalized));
+        // Load bboxes if present
+        const bboxes = data.bboxes || {};
+        const loadedBboxes = {};
+        const baseW = videoDims?.width || 1;
+        const baseH = videoDims?.height || 1;
+        Object.entries(bboxes).forEach(([name, bb]) => {
+          loadedBboxes[name] = {
+            x1: bb.x1, y1: bb.y1, x2: bb.x2, y2: bb.y2,
+            fx1: bb.x1 / baseW, fy1: bb.y1 / baseH,
+            fx2: bb.x2 / baseW, fy2: bb.y2 / baseH,
+          };
+        });
+        setObjectBboxes(loadedBboxes);
         const counts = {};
         Object.entries(normalized).forEach(([name, pts]) => {
           counts[name] = Array.isArray(pts) ? pts.length : 0;
@@ -241,6 +258,10 @@ export default function AnnotationPage() {
         setPoints(first ? normalized[first] : []);
         setMarkAsTarget(isTargetName(first));
         setTargetToggleTouched(false);
+        // If objects exist, skip the target flow prompt
+        if (Object.keys(normalized).length > 0) {
+          setTargetFlowStep(null);
+        }
       } catch (err) {
         setStatus(err.message);
         setStatusKind("error");
@@ -248,6 +269,22 @@ export default function AnnotationPage() {
     }
     hydrateFrame();
   }, [currentIndex, sessionId, videoDims]);
+
+  // Auto-advance: bbox drawn → switch to points step
+  useEffect(() => {
+    if (targetFlowStep === "bbox" && selectedObject && objectBboxes[selectedObject]) {
+      setTargetFlowStep("points");
+      setAnnotationMode("point");
+      setLabelMode(1);
+    }
+  }, [objectBboxes, targetFlowStep, selectedObject]);
+
+  // Re-prompt if all objects deleted
+  useEffect(() => {
+    if (objectList.length === 0 && targetFlowStep === null && !loading) {
+      setTargetFlowStep("frame");
+    }
+  }, [objectList.length, loading]);
 
   function updateCache(frameIndex, updatedObjects) {
     if (!sessionId) return;
@@ -349,17 +386,62 @@ export default function AnnotationPage() {
       .join("|");
   }
 
-  function handleImageClick(event) {
-    if (!imgRef.current || !selectedObject) return;
+  function _getImageCoords(event) {
     const rect = imgRef.current.getBoundingClientRect();
     const x = event.clientX - rect.left;
     const y = event.clientY - rect.top;
-    const fx = x / rect.width;
-    const fy = y / rect.height;
+    const fx = Math.max(0, Math.min(1, x / rect.width));
+    const fy = Math.max(0, Math.min(1, y / rect.height));
     const baseW = videoDims?.width || imgRef.current.naturalWidth || 1;
     const baseH = videoDims?.height || imgRef.current.naturalHeight || 1;
-    const nx = fx * baseW;
-    const ny = fy * baseH;
+    return { fx, fy, nx: fx * baseW, ny: fy * baseH };
+  }
+
+  function handleImageMouseDown(event) {
+    if (!imgRef.current || !selectedObject) return;
+    if (annotationMode !== "bbox") return;
+    event.preventDefault();
+    const { fx, fy } = _getImageCoords(event);
+    setBboxDraw({ startFx: fx, startFy: fy, endFx: fx, endFy: fy });
+  }
+
+  function handleImageMouseMove(event) {
+    if (!bboxDraw || annotationMode !== "bbox") return;
+    const { fx, fy } = _getImageCoords(event);
+    setBboxDraw((prev) => ({ ...prev, endFx: fx, endFy: fy }));
+  }
+
+  function handleImageMouseUp(event) {
+    if (!bboxDraw || annotationMode !== "bbox" || !selectedObject) return;
+    const { fx, fy, nx, ny } = _getImageCoords(event);
+    const baseW = videoDims?.width || imgRef.current.naturalWidth || 1;
+    const baseH = videoDims?.height || imgRef.current.naturalHeight || 1;
+    const x1 = Math.min(bboxDraw.startFx, fx) * baseW;
+    const y1 = Math.min(bboxDraw.startFy, fy) * baseH;
+    const x2 = Math.max(bboxDraw.startFx, fx) * baseW;
+    const y2 = Math.max(bboxDraw.startFy, fy) * baseH;
+    // Only save if the box has meaningful size
+    if (Math.abs(x2 - x1) > 5 && Math.abs(y2 - y1) > 5) {
+      setObjectBboxes((prev) => ({
+        ...prev,
+        [selectedObject]: {
+          x1, y1, x2, y2,
+          fx1: Math.min(bboxDraw.startFx, fx),
+          fy1: Math.min(bboxDraw.startFy, fy),
+          fx2: Math.max(bboxDraw.startFx, fx),
+          fy2: Math.max(bboxDraw.startFy, fy),
+        },
+      }));
+    }
+    setBboxDraw(null);
+    setShowPreview(false);
+    setMaskPreviewUrl("");
+  }
+
+  function handleImageClick(event) {
+    if (!imgRef.current || !selectedObject) return;
+    if (annotationMode === "bbox") return; // bbox uses mousedown/up
+    const { fx, fy, nx, ny } = _getImageCoords(event);
 
     const next = [
       ...(frameObjects[selectedObject] || []),
@@ -431,13 +513,18 @@ export default function AnnotationPage() {
     }
     try {
       setBusy(true);
-      await submitAnnotation({
+      const payload = {
         session_id: sessionId,
         frame_index: currentIndex,
         object_name: objectNameToSave,
         previous_object_name: previousObjectName,
         points: pointsToSave,
-      });
+      };
+      const bbox = objectBboxes[objectNameToSave] || objectBboxes[selectedObject];
+      if (bbox) {
+        payload.bbox = { x1: bbox.x1, y1: bbox.y1, x2: bbox.x2, y2: bbox.y2 };
+      }
+      await submitAnnotation(payload);
       setSavedCounts((prev) => ({
         ...prev,
         ...(previousObjectName ? { [previousObjectName]: 0 } : {}),
@@ -544,12 +631,17 @@ export default function AnnotationPage() {
       setBusy(true);
       setStatus("Generating mask preview...");
       setStatusKind("info");
-      const response = await testMask({
+      const testPayload = {
         session_id: sessionId,
         frame_index: currentIndex,
         object_name: selectedObject,
         points: (frameObjects[selectedObject] || []).map(({ x, y, label }) => ({ x, y, label })),
-      });
+      };
+      const testBbox = objectBboxes[selectedObject];
+      if (testBbox) {
+        testPayload.bbox = { x1: testBbox.x1, y1: testBbox.y1, x2: testBbox.x2, y2: testBbox.y2 };
+      }
+      const response = await testMask(testPayload);
       setStatus(response.message || "Mask test complete.");
       setStatusKind("success");
       if (response.preview_url) {
@@ -564,6 +656,19 @@ export default function AnnotationPage() {
     } finally {
       setBusy(false);
     }
+  }
+
+  function startTargetFlow() {
+    const targetName = "target_marker";
+    const updated = { ...frameObjects, [targetName]: [] };
+    setFrameObjects(updated);
+    setObjectList(Object.keys(updated));
+    setSelectedObject(targetName);
+    setPoints([]);
+    setMarkAsTarget(true);
+    setAnnotationMode("bbox");
+    setTargetFlowStep("bbox");
+    updateCache(currentIndex, updated);
   }
 
   function handleAddObject() {
@@ -717,8 +822,12 @@ export default function AnnotationPage() {
                     position: "relative",
                     cursor: selectedObject ? "crosshair" : "default",
                     minHeight: "300px",
+                    userSelect: annotationMode === "bbox" ? "none" : undefined,
                   }}
                   onClick={handleImageClick}
+                  onMouseDown={handleImageMouseDown}
+                  onMouseMove={handleImageMouseMove}
+                  onMouseUp={handleImageMouseUp}
                 >
                   {loading ? (
                     <div style={{ padding: "4rem", textAlign: "center" }}>
@@ -802,6 +911,32 @@ export default function AnnotationPage() {
                       title="Click to remove"
                     />
                   ))}
+                  {/* Saved bbox overlay */}
+                  {selectedObject && objectBboxes[selectedObject] && (
+                    <div style={{
+                      position: "absolute",
+                      left: `${objectBboxes[selectedObject].fx1 * 100}%`,
+                      top: `${objectBboxes[selectedObject].fy1 * 100}%`,
+                      width: `${(objectBboxes[selectedObject].fx2 - objectBboxes[selectedObject].fx1) * 100}%`,
+                      height: `${(objectBboxes[selectedObject].fy2 - objectBboxes[selectedObject].fy1) * 100}%`,
+                      border: "2px dashed #ff832b",
+                      backgroundColor: "rgba(255, 131, 43, 0.1)",
+                      pointerEvents: "none",
+                    }} />
+                  )}
+                  {/* Bbox drawing overlay */}
+                  {bboxDraw && (
+                    <div style={{
+                      position: "absolute",
+                      left: `${Math.min(bboxDraw.startFx, bboxDraw.endFx) * 100}%`,
+                      top: `${Math.min(bboxDraw.startFy, bboxDraw.endFy) * 100}%`,
+                      width: `${Math.abs(bboxDraw.endFx - bboxDraw.startFx) * 100}%`,
+                      height: `${Math.abs(bboxDraw.endFy - bboxDraw.startFy) * 100}%`,
+                      border: "2px dashed #0f62fe",
+                      backgroundColor: "rgba(15, 98, 254, 0.1)",
+                      pointerEvents: "none",
+                    }} />
+                  )}
                 </div>
               </Tile>
 
@@ -848,6 +983,178 @@ export default function AnnotationPage() {
             {/* Right column - Controls */}
             <Column lg={4} md={2} sm={4}>
               <div style={{ maxHeight: "calc(100vh - 120px)", overflowY: "auto", position: "sticky", top: "60px" }}>
+
+              {/* ── Guided flow: frame selection ── */}
+              {targetFlowStep === "frame" && (
+                <Tile style={{ marginBottom: "1rem" }}>
+                  <h3 style={{ fontSize: "1.125rem", fontWeight: 600, marginBottom: "0.75rem" }}>
+                    Step 1: Select Reference Frame
+                  </h3>
+                  <p style={{ fontSize: "0.875rem", color: "#525252", marginBottom: "1rem" }}>
+                    Navigate to a frame where your objects are clearly visible, or use suggested optimal frames.
+                  </p>
+                  <p style={{ fontSize: "0.875rem", fontWeight: 600, marginBottom: "1rem", textAlign: "center" }}>
+                    Frame {frames.length ? currentIndex + 1 : 0} / {frames.length}
+                  </p>
+                  <div style={{ display: "flex", flexDirection: "column", gap: "0.75rem" }}>
+                    {loadingSuggestions ? (
+                      <InlineLoading description="Analyzing frames..." />
+                    ) : (
+                      <Button
+                        kind="tertiary"
+                        size="sm"
+                        renderIcon={Analytics}
+                        onClick={handleSuggestFrames}
+                        disabled={frames.length === 0}
+                        style={{ width: "100%", justifyContent: "center" }}
+                      >
+                        {suggestedFrames.length > 0
+                          ? `View Suggested Frames (${suggestedFrames.length})`
+                          : "Suggest Optimal Frames"}
+                      </Button>
+                    )}
+                    <Button
+                      kind="primary"
+                      size="lg"
+                      onClick={() => setTargetFlowStep("prompt")}
+                      disabled={frames.length === 0}
+                      style={{ width: "100%", justifyContent: "center", maxWidth: "100%", paddingRight: "1rem" }}
+                    >
+                      Use This Frame
+                    </Button>
+                  </div>
+                </Tile>
+              )}
+
+              {/* ── Guided target flow: prompt ── */}
+              {targetFlowStep === "prompt" && (
+                <Tile style={{ marginBottom: "1rem" }}>
+                  <h3 style={{ fontSize: "1.125rem", fontWeight: 600, marginBottom: "1.25rem", textAlign: "center" }}>
+                    What would you like to do?
+                  </h3>
+                  <div style={{ display: "flex", flexDirection: "column", gap: "0.75rem" }}>
+                    <Button
+                      kind="primary"
+                      size="lg"
+                      onClick={startTargetFlow}
+                      style={{ width: "100%", justifyContent: "center", maxWidth: "100%", paddingRight: "1rem" }}
+                    >
+                      Add Target Marker
+                    </Button>
+                    <p style={{ fontSize: "0.75rem", color: "#525252", textAlign: "center", marginTop: "-0.5rem" }}>
+                      Draw a bounding box around your gaze ring, then refine with points
+                    </p>
+                    <Button
+                      kind="ghost"
+                      size="lg"
+                      onClick={() => setTargetFlowStep(null)}
+                      style={{ width: "100%", justifyContent: "center", maxWidth: "100%", paddingRight: "1rem" }}
+                    >
+                      Skip — Add Objects Only
+                    </Button>
+                    <p style={{ fontSize: "0.75rem", color: "#6f6f6f", textAlign: "center", marginTop: "-0.5rem" }}>
+                      Annotate objects without a target marker
+                    </p>
+                  </div>
+                </Tile>
+              )}
+
+              {/* ── Guided target flow: bbox step ── */}
+              {targetFlowStep === "bbox" && (
+                <Tile style={{ marginBottom: "1rem" }}>
+                  <h3 style={{ fontSize: "1rem", fontWeight: 600, marginBottom: "0.75rem", display: "flex", alignItems: "center", gap: "0.5rem" }}>
+                    <FlagFilled size={16} /> Step 1: Draw Bounding Box
+                  </h3>
+                  <p style={{ fontSize: "0.875rem", color: "#525252", marginBottom: "1rem" }}>
+                    Click and drag on the image to draw a box around the target marker.
+                  </p>
+                  <Tag type="cyan" size="sm">target_marker</Tag>
+                </Tile>
+              )}
+
+              {/* ── Guided target flow: points step ── */}
+              {targetFlowStep === "points" && (
+                <Tile style={{ marginBottom: "1rem" }}>
+                  <h3 style={{ fontSize: "1rem", fontWeight: 600, marginBottom: "0.75rem", display: "flex", alignItems: "center", gap: "0.5rem" }}>
+                    <FlagFilled size={16} /> Step 2: Add Points
+                  </h3>
+                  <p style={{ fontSize: "0.875rem", color: "#525252", marginBottom: "1rem" }}>
+                    Click inside the box to mark the target. Use negative points to exclude nearby objects.
+                  </p>
+                  <div style={{ display: "flex", gap: "0.5rem", marginBottom: "0.75rem" }}>
+                    <Button
+                      kind={labelMode === 1 ? "primary" : "secondary"}
+                      size="sm"
+                      onClick={() => setLabelMode(1)}
+                      renderIcon={AddAlt}
+                      style={{ flex: 1 }}
+                    >
+                      Positive
+                    </Button>
+                    <Button
+                      kind={labelMode === 0 ? "danger" : "secondary"}
+                      size="sm"
+                      onClick={() => setLabelMode(0)}
+                      renderIcon={SubtractAlt}
+                      style={{ flex: 1 }}
+                    >
+                      Negative
+                    </Button>
+                  </div>
+                  <div style={{ display: "flex", gap: "0.5rem" }}>
+                    <Button
+                      kind="ghost"
+                      size="sm"
+                      onClick={() => {
+                        const pts = frameObjects[selectedObject] || [];
+                        if (pts.length > 0) {
+                          undoLastPoint();
+                        } else {
+                          // Undo bbox → go back to bbox step
+                          setObjectBboxes((prev) => {
+                            const next = { ...prev };
+                            delete next[selectedObject];
+                            return next;
+                          });
+                          setTargetFlowStep("bbox");
+                          setAnnotationMode("bbox");
+                        }
+                      }}
+                      renderIcon={Undo}
+                      style={{ flex: 1 }}
+                    >
+                      Undo
+                    </Button>
+                    <Button
+                      kind="tertiary"
+                      size="sm"
+                      onClick={handleTestMask}
+                      disabled={busy}
+                      renderIcon={ZoomIn}
+                      style={{ flex: 1 }}
+                    >
+                      Test Mask
+                    </Button>
+                  </div>
+                  <Button
+                    kind="primary"
+                    size="sm"
+                    onClick={() => {
+                      handleSavePoints();
+                      setTargetFlowStep(null);
+                    }}
+                    disabled={busy || (frameObjects[selectedObject] || []).length === 0}
+                    renderIcon={Save}
+                    style={{ width: "100%", marginTop: "1rem", justifyContent: "center", maxWidth: "100%", paddingRight: "1rem" }}
+                  >
+                    Done — Save Target
+                  </Button>
+                </Tile>
+              )}
+
+              {/* ── Normal panel (after target flow or skip) ── */}
+              {targetFlowStep === null && (
+              <>
               {/* Objects panel */}
               <Tile style={{ marginBottom: "1rem" }}>
                 <h3 style={{ fontSize: "1rem", fontWeight: 600, marginBottom: "1rem", display: "flex", alignItems: "center", gap: "0.5rem" }}>
@@ -868,19 +1175,6 @@ export default function AnnotationPage() {
                   }}
                   size="sm"
                 />
-                <Checkbox
-                  id="mark-target"
-                  labelText={<span style={{ display: "flex", alignItems: "center", gap: "0.5rem" }}><FlagFilled size={14} /> Mark as <DefinitionTooltip definition="The object you want to detect gaze/overlap against. At least one target is needed for ELAN export and overlap analysis." align="bottom">target object</DefinitionTooltip></span>}
-                  checked={markAsTarget}
-                  onChange={(_, { checked }) => {
-                    setMarkAsTarget(checked);
-                    setTargetToggleTouched(true);
-                  }}
-                  style={{ marginTop: "0.75rem" }}
-                />
-                <p style={{ fontSize: "0.75rem", color: "#6f6f6f", marginTop: "0.25rem", marginLeft: "1.75rem" }}>
-                  Required for gaze/overlap detection and ELAN export
-                </p>
                 <div style={{ display: "flex", gap: "0.5rem", marginTop: "1rem" }}>
                   <Button kind="secondary" size="sm" onClick={handleAddObject} renderIcon={Add}>
                     Add
@@ -1075,6 +1369,8 @@ export default function AnnotationPage() {
                     ))}
                   </ul>
                 </InlineNotification>
+              )}
+              </>
               )}
               </div>
             </Column>

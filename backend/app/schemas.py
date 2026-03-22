@@ -45,6 +45,7 @@ class ConfigUpdate(BaseModel):
     process_start_frame: Optional[int] = None
     process_end_frame: Optional[int] = None
     enable_bidirectional: bool = True
+    enhance_target: bool = False
 
 
 class Point(BaseModel):
@@ -53,12 +54,20 @@ class Point(BaseModel):
     label: int
 
 
+class BBox(BaseModel):
+    x1: float
+    y1: float
+    x2: float
+    y2: float
+
+
 class AnnotationPayload(BaseModel):
     session_id: str
     frame_index: int
     object_name: str
     previous_object_name: Optional[str] = None
     points: List[Point]
+    bbox: Optional[BBox] = None
 
 
 class ProcessingStartRequest(BaseModel):

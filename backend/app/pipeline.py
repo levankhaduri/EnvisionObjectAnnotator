@@ -549,6 +549,7 @@ class UltraOptimizedProcessor:
         ram_pressure_threshold=RAM_PRESSURE_THRESHOLD,
         disk_store_enabled=True,
         enable_bidirectional=False,
+        enhance_target=False,
     ):
         self.predictor = predictor
         self.full_video_dir = video_dir
@@ -582,6 +583,7 @@ class UltraOptimizedProcessor:
         self.ram_pressure_threshold = ram_pressure_threshold
         self.disk_store_enabled = disk_store_enabled
         self.enable_bidirectional = enable_bidirectional
+        self.enhance_target = enhance_target
         self._mask_store = None
         self._disk_store_active = False
         self.frame_index_map = None
@@ -907,6 +909,61 @@ class UltraOptimizedProcessor:
             json.dump(meta, f)
         return roi_dir
 
+    @staticmethod
+    def _enhance_red_channel(frame):
+        """Enhance red regions and desaturate non-red to make red markers pop."""
+        hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
+        # Red in HSV spans two hue ranges
+        mask_low = cv2.inRange(hsv, (0, 70, 50), (10, 255, 255))
+        mask_high = cv2.inRange(hsv, (160, 70, 50), (180, 255, 255))
+        red_mask = mask_low | mask_high
+
+        hsv_f = hsv.astype(np.float32)
+        # Boost red pixels: 1.5x saturation, 1.3x value
+        hsv_f[:, :, 1][red_mask > 0] = np.clip(hsv_f[:, :, 1][red_mask > 0] * 1.5, 0, 255)
+        hsv_f[:, :, 2][red_mask > 0] = np.clip(hsv_f[:, :, 2][red_mask > 0] * 1.3, 0, 255)
+        # Desaturate non-red: 0.7x saturation
+        hsv_f[:, :, 1][red_mask == 0] *= 0.7
+
+        enhanced = cv2.cvtColor(hsv_f.astype(np.uint8), cv2.COLOR_HSV2BGR)
+
+        # CLAHE for local contrast
+        lab = cv2.cvtColor(enhanced, cv2.COLOR_BGR2LAB)
+        clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
+        lab[:, :, 0] = clahe.apply(lab[:, :, 0])
+        enhanced = cv2.cvtColor(lab, cv2.COLOR_LAB2BGR)
+
+        return enhanced
+
+    def _ensure_enhanced_dir(self, source_dir, source_names):
+        """Create a directory of red-enhanced frames for SAM2 input."""
+        enhanced_dir = f"{source_dir}_red_enhanced"
+        os.makedirs(enhanced_dir, exist_ok=True)
+        meta_path = os.path.join(enhanced_dir, "_enhance_meta.json")
+        meta = {"frame_count": len(source_names), "version": 1}
+        if os.path.exists(meta_path):
+            try:
+                existing = json.loads(open(meta_path, "r", encoding="utf-8").read())
+            except Exception:
+                existing = None
+            if existing == meta and len(self._list_frame_files(enhanced_dir)) == len(source_names):
+                return enhanced_dir
+
+        for name in source_names:
+            src_path = os.path.join(source_dir, name)
+            dst_path = os.path.join(enhanced_dir, name)
+            if os.path.exists(dst_path):
+                continue
+            frame = cv2.imread(src_path)
+            if frame is None:
+                continue
+            enhanced = self._enhance_red_channel(frame)
+            cv2.imwrite(dst_path, enhanced)
+
+        with open(meta_path, "w", encoding="utf-8") as f:
+            json.dump(meta, f)
+        return enhanced_dir
+
     def _create_chunk_dir(self, chunk_start, chunk_end):
         """Create a temp directory with hardlinks to only the frames in [chunk_start, chunk_end]."""
         chunks_root = f"{self.video_dir}_chunks"
@@ -979,6 +1036,10 @@ class UltraOptimizedProcessor:
                     self.frame_names = self._list_frame_files(self.video_dir)
                 else:
                     self.roi_info = None
+
+        if getattr(self, "enhance_target", False):
+            self.video_dir = self._ensure_enhanced_dir(self.video_dir, self.frame_names)
+            self.frame_names = self._list_frame_files(self.video_dir)
 
         stride_val = None
         if self.frame_stride is not None:
@@ -1107,7 +1168,7 @@ class UltraOptimizedProcessor:
                 self._store_frame_results(results, missing, prev_masks)
         return results
 
-    def process_video_with_memory_management(self, points_dict, labels_dict, object_names, debug=True, multiframe_data=None, progress_callback=None):
+    def process_video_with_memory_management(self, points_dict, labels_dict, object_names, debug=True, multiframe_data=None, bboxes_dict=None, progress_callback=None):
         """Process video with ultra memory management and improved overlap detection."""
         last_exc = None
         self.partial_results = {}
@@ -1136,10 +1197,10 @@ class UltraOptimizedProcessor:
                             % (attempt + 1, self.batch_size, getattr(self.predictor, "device", "unknown"))
                         )
                     if attempt == 0:
-                        return self._process_standard_optimized(points_dict, labels_dict, object_names, debug, multiframe_data=multiframe_data)
+                        return self._process_standard_optimized(points_dict, labels_dict, object_names, debug, multiframe_data=multiframe_data, bboxes_dict=bboxes_dict)
                     if attempt == 1:
                         self.batch_size = self.batch_size // 2
-                        return self._process_standard_optimized(points_dict, labels_dict, object_names, debug, multiframe_data=multiframe_data)
+                        return self._process_standard_optimized(points_dict, labels_dict, object_names, debug, multiframe_data=multiframe_data, bboxes_dict=bboxes_dict)
                     return self._process_cpu_fallback(points_dict, labels_dict, object_names, debug)
                 except RuntimeError as exc:
                     if "out of memory" in str(exc).lower():
@@ -1164,7 +1225,7 @@ class UltraOptimizedProcessor:
         finally:
             ultra_cleanup_memory()
 
-    def _process_standard_optimized(self, points_dict, labels_dict, object_names, debug, multiframe_data=None):
+    def _process_standard_optimized(self, points_dict, labels_dict, object_names, debug, multiframe_data=None, bboxes_dict=None):
         self._prepare_frame_source(points_dict)
         image_size = getattr(self.predictor, "image_size", 1024)
         bytes_per_frame = image_size * image_size * 3 * 4
@@ -1380,13 +1441,16 @@ class UltraOptimizedProcessor:
                     try:
                         points = np.array(points_dict[obj_id], dtype=np.float32)
                         labels = np.array(labels_dict[obj_id], dtype=np.int32)
-                        _, out_obj_ids, out_mask_logits = self.predictor.add_new_points_or_box(
+                        sam_kwargs = dict(
                             inference_state=inference_state,
                             frame_idx=start_frame,
                             obj_id=obj_id,
                             points=points,
                             labels=labels,
                         )
+                        if bboxes_dict and obj_id in bboxes_dict:
+                            sam_kwargs["box"] = bboxes_dict[obj_id]
+                        _, out_obj_ids, out_mask_logits = self.predictor.add_new_points_or_box(**sam_kwargs)
                         del out_mask_logits, points, labels
                         ultra_cleanup_memory()
                     except Exception as exc:
@@ -1418,13 +1482,16 @@ class UltraOptimizedProcessor:
                             try:
                                 pts = np.array(mf_points[obj_id], dtype=np.float32)
                                 lbs = np.array(mf_labels[obj_id], dtype=np.int32)
-                                _, _, out_ml = self.predictor.add_new_points_or_box(
+                                mf_kwargs = dict(
                                     inference_state=inference_state,
                                     frame_idx=mf_idx,
                                     obj_id=obj_id,
                                     points=pts,
                                     labels=lbs,
                                 )
+                                if bboxes_dict and obj_id in bboxes_dict:
+                                    mf_kwargs["box"] = bboxes_dict[obj_id]
+                                _, _, out_ml = self.predictor.add_new_points_or_box(**mf_kwargs)
                                 del out_ml, pts, lbs
                                 ultra_cleanup_memory()
                             except Exception as exc:
@@ -1461,13 +1528,16 @@ class UltraOptimizedProcessor:
                         try:
                             pts = np.array(points_dict[obj_id], dtype=np.float32)
                             lbs = np.array(labels_dict[obj_id], dtype=np.int32)
-                            _, _, out_ml = self.predictor.add_new_points_or_box(
+                            bw_kwargs = dict(
                                 inference_state=inference_state,
                                 frame_idx=start_frame,
                                 obj_id=obj_id,
                                 points=pts,
                                 labels=lbs,
                             )
+                            if bboxes_dict and obj_id in bboxes_dict:
+                                bw_kwargs["box"] = bboxes_dict[obj_id]
+                            _, _, out_ml = self.predictor.add_new_points_or_box(**bw_kwargs)
                             del out_ml, pts, lbs
                             ultra_cleanup_memory()
                         except Exception as exc:
@@ -1565,13 +1635,16 @@ class UltraOptimizedProcessor:
                                 try:
                                     points = np.array(points_dict[obj_id], dtype=np.float32)
                                     labels = np.array(labels_dict[obj_id], dtype=np.int32)
-                                    _, out_obj_ids, out_mask_logits = self.predictor.add_new_points_or_box(
+                                    ck_kwargs = dict(
                                         inference_state=chunk_inference_state,
                                         frame_idx=local_seed,
                                         obj_id=obj_id,
                                         points=points,
                                         labels=labels,
                                     )
+                                    if bboxes_dict and obj_id in bboxes_dict:
+                                        ck_kwargs["box"] = bboxes_dict[obj_id]
+                                    _, out_obj_ids, out_mask_logits = self.predictor.add_new_points_or_box(**ck_kwargs)
                                     del out_mask_logits, points, labels
                                     ultra_cleanup_memory()
                                 except Exception as exc:
@@ -1691,14 +1764,17 @@ class UltraOptimizedProcessor:
                                         labels = np.array(
                                             labels_dict[obj_id], dtype=np.int32
                                         )
+                                        bwd_kwargs = dict(
+                                            inference_state=chunk_inference_state,
+                                            frame_idx=local_seed_bwd,
+                                            obj_id=obj_id,
+                                            points=points,
+                                            labels=labels,
+                                        )
+                                        if bboxes_dict and obj_id in bboxes_dict:
+                                            bwd_kwargs["box"] = bboxes_dict[obj_id]
                                         _, _, out_mask_logits = (
-                                            self.predictor.add_new_points_or_box(
-                                                inference_state=chunk_inference_state,
-                                                frame_idx=local_seed_bwd,
-                                                obj_id=obj_id,
-                                                points=points,
-                                                labels=labels,
-                                            )
+                                            self.predictor.add_new_points_or_box(**bwd_kwargs)
                                         )
                                         del out_mask_logits, points, labels
                                         ultra_cleanup_memory()
