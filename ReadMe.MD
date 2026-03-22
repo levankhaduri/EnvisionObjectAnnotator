@@ -3,7 +3,7 @@
 
 <p align="center">
   <a href="https://envisionbox.org/embedded_EnvisionObjectAnnotator.html">
-    <b>📖 EnvisionBox Module — Full Documentation</b>
+    <b>EnvisionBox Module — Full Documentation</b>
   </a>
 </p>
 
@@ -11,10 +11,10 @@
 
 <p align="center">
   <b>Authors</b><br>
+  Levani Khaduri — <a href="mailto:Levani.Khaduri@student.hpi.uni-potsdam.de">Levani.Khaduri@student.hpi.uni-potsdam.de</a>  
   Davide Ahmar — <a href="mailto:ahmar.davide@gmail.com">ahmar.davide@gmail.com</a><br>
   Wim Pouw — <a href="mailto:wim.pouw@donders.ru.nl">wim.pouw@donders.ru.nl</a><br>
   Babajide Owoyele — <a href="mailto:babajide.owoyele@hpi.de">babajide.owoyele@hpi.de</a><br>
-  Levani Khaduri — <a href="mailto:Levani.Khaduri@student.hpi.uni-potsdam.de">Levani.Khaduri@student.hpi.uni-potsdam.de</a>
 </p>
 
 <p align="center">
@@ -29,17 +29,17 @@ The tool was developed as part of the **EnvisionBOXBABY project**, with a focus 
 
 ##  Features
 
-- 🖼️ **Interactive annotation**: select a reference frame, click to add positive/negative points, and name each object.
-- 🎯 **Target detection**: any object named with `"target"` (case-insensitive) is treated as the gaze/marker object.
-- 🔍 **Event detection**: logs “looking at” events whenever the target overlaps another object:
-  - By pixel overlap above a threshold  
-  - Or by centroid inclusion  
-- ⚙️ **Model selection**: choose between SAM2.1 sizes or EdgeTAM (if installed).
-- 📂 **Outputs**:
+- **Interactive annotation**: select a reference frame, click to add positive/negative points, and name each object.
+- **Target detection**: any object named with `”target”` (case-insensitive) is treated as the gaze/marker object.
+- **Event detection**: logs “looking at” events whenever the target overlaps another object:
+  - By pixel overlap above a threshold
+  - Or by centroid inclusion
+- **Model selection**: choose between SAM2.1 sizes or EdgeTAM (if installed).
+- **Outputs**:
   - Annotated **video** with masks and status overlays
   - Frame-by-frame **CSV** with bounding boxes, centroids, overlap info
   - Time-aligned **ELAN (.eaf)** file for qualitative coding
-- 📊 **Profiling**: timings, FPS, and GPU/RAM snapshots shown in Results.
+- **Profiling**: timings, FPS, and GPU/RAM snapshots shown in Results.
 
 ---
 

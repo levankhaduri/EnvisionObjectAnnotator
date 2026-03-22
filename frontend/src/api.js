@@ -185,6 +185,10 @@ export function getResultDownloadUrl(sessionId, kind) {
   return `${API_BASE}/results/download/${sessionId}?${params.toString()}`;
 }
 
+export function getResultDownloadAllUrl(sessionId) {
+  return `${API_BASE}/results/download-all/${sessionId}`;
+}
+
 export async function runDiagnostics() {
   const res = await fetch(`${API_BASE}/diagnostics`);
   if (!res.ok) {

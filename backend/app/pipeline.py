@@ -549,6 +549,7 @@ class UltraOptimizedProcessor:
         ram_pressure_threshold=RAM_PRESSURE_THRESHOLD,
         disk_store_enabled=True,
         enable_bidirectional=False,
+        enhance_target=False,
     ):
         self.predictor = predictor
         self.full_video_dir = video_dir
@@ -582,6 +583,7 @@ class UltraOptimizedProcessor:
         self.ram_pressure_threshold = ram_pressure_threshold
         self.disk_store_enabled = disk_store_enabled
         self.enable_bidirectional = enable_bidirectional
+        self.enhance_target = enhance_target
         self._mask_store = None
         self._disk_store_active = False
         self.frame_index_map = None
@@ -907,6 +909,61 @@ class UltraOptimizedProcessor:
             json.dump(meta, f)
         return roi_dir
 
+    @staticmethod
+    def _enhance_red_channel(frame):
+        """Enhance red regions and desaturate non-red to make red markers pop."""
+        hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
+        # Red in HSV spans two hue ranges
+        mask_low = cv2.inRange(hsv, (0, 70, 50), (10, 255, 255))
+        mask_high = cv2.inRange(hsv, (160, 70, 50), (180, 255, 255))
+        red_mask = mask_low | mask_high
+
+        hsv_f = hsv.astype(np.float32)
+        # Boost red pixels: 1.5x saturation, 1.3x value
+        hsv_f[:, :, 1][red_mask > 0] = np.clip(hsv_f[:, :, 1][red_mask > 0] * 1.5, 0, 255)
+        hsv_f[:, :, 2][red_mask > 0] = np.clip(hsv_f[:, :, 2][red_mask > 0] * 1.3, 0, 255)
+        # Desaturate non-red: 0.7x saturation
+        hsv_f[:, :, 1][red_mask == 0] *= 0.7
+
+        enhanced = cv2.cvtColor(hsv_f.astype(np.uint8), cv2.COLOR_HSV2BGR)
+
+        # CLAHE for local contrast
+        lab = cv2.cvtColor(enhanced, cv2.COLOR_BGR2LAB)
+        clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
+        lab[:, :, 0] = clahe.apply(lab[:, :, 0])
+        enhanced = cv2.cvtColor(lab, cv2.COLOR_LAB2BGR)
+
+        return enhanced
+
+    def _ensure_enhanced_dir(self, source_dir, source_names):
+        """Create a directory of red-enhanced frames for SAM2 input."""
+        enhanced_dir = f"{source_dir}_red_enhanced"
+        os.makedirs(enhanced_dir, exist_ok=True)
+        meta_path = os.path.join(enhanced_dir, "_enhance_meta.json")
+        meta = {"frame_count": len(source_names), "version": 1}
+        if os.path.exists(meta_path):
+            try:
+                existing = json.loads(open(meta_path, "r", encoding="utf-8").read())
+            except Exception:
+                existing = None
+            if existing == meta and len(self._list_frame_files(enhanced_dir)) == len(source_names):
+                return enhanced_dir
+
+        for name in source_names:
+            src_path = os.path.join(source_dir, name)
+            dst_path = os.path.join(enhanced_dir, name)
+            if os.path.exists(dst_path):
+                continue
+            frame = cv2.imread(src_path)
+            if frame is None:
+                continue
+            enhanced = self._enhance_red_channel(frame)
+            cv2.imwrite(dst_path, enhanced)
+
+        with open(meta_path, "w", encoding="utf-8") as f:
+            json.dump(meta, f)
+        return enhanced_dir
+
     def _create_chunk_dir(self, chunk_start, chunk_end):
         """Create a temp directory with hardlinks to only the frames in [chunk_start, chunk_end]."""
         chunks_root = f"{self.video_dir}_chunks"
@@ -979,6 +1036,10 @@ class UltraOptimizedProcessor:
                     self.frame_names = self._list_frame_files(self.video_dir)
                 else:
                     self.roi_info = None
+
+        if getattr(self, "enhance_target", False):
+            self.video_dir = self._ensure_enhanced_dir(self.video_dir, self.frame_names)
+            self.frame_names = self._list_frame_files(self.video_dir)
 
         stride_val = None
         if self.frame_stride is not None:
@@ -1107,7 +1168,7 @@ class UltraOptimizedProcessor:
                 self._store_frame_results(results, missing, prev_masks)
         return results
 
-    def process_video_with_memory_management(self, points_dict, labels_dict, object_names, debug=True, multiframe_data=None, progress_callback=None):
+    def process_video_with_memory_management(self, points_dict, labels_dict, object_names, debug=True, multiframe_data=None, bboxes_dict=None, progress_callback=None):
         """Process video with ultra memory management and improved overlap detection."""
         last_exc = None
         self.partial_results = {}
@@ -1136,10 +1197,10 @@ class UltraOptimizedProcessor:
                             % (attempt + 1, self.batch_size, getattr(self.predictor, "device", "unknown"))
                         )
                     if attempt == 0:
-                        return self._process_standard_optimized(points_dict, labels_dict, object_names, debug, multiframe_data=multiframe_data)
+                        return self._process_standard_optimized(points_dict, labels_dict, object_names, debug, multiframe_data=multiframe_data, bboxes_dict=bboxes_dict)
                     if attempt == 1:
                         self.batch_size = self.batch_size // 2
-                        return self._process_standard_optimized(points_dict, labels_dict, object_names, debug, multiframe_data=multiframe_data)
+                        return self._process_standard_optimized(points_dict, labels_dict, object_names, debug, multiframe_data=multiframe_data, bboxes_dict=bboxes_dict)
                     return self._process_cpu_fallback(points_dict, labels_dict, object_names, debug)
                 except RuntimeError as exc:
                     if "out of memory" in str(exc).lower():
@@ -1164,7 +1225,7 @@ class UltraOptimizedProcessor:
         finally:
             ultra_cleanup_memory()
 
-    def _process_standard_optimized(self, points_dict, labels_dict, object_names, debug, multiframe_data=None):
+    def _process_standard_optimized(self, points_dict, labels_dict, object_names, debug, multiframe_data=None, bboxes_dict=None):
         self._prepare_frame_source(points_dict)
         image_size = getattr(self.predictor, "image_size", 1024)
         bytes_per_frame = image_size * image_size * 3 * 4
@@ -1380,13 +1441,16 @@ class UltraOptimizedProcessor:
                     try:
                         points = np.array(points_dict[obj_id], dtype=np.float32)
                         labels = np.array(labels_dict[obj_id], dtype=np.int32)
-                        _, out_obj_ids, out_mask_logits = self.predictor.add_new_points_or_box(
+                        sam_kwargs = dict(
                             inference_state=inference_state,
                             frame_idx=start_frame,
                             obj_id=obj_id,
                             points=points,
                             labels=labels,
                         )
+                        if bboxes_dict and obj_id in bboxes_dict:
+                            sam_kwargs["box"] = bboxes_dict[obj_id]
+                        _, out_obj_ids, out_mask_logits = self.predictor.add_new_points_or_box(**sam_kwargs)
                         del out_mask_logits, points, labels
                         ultra_cleanup_memory()
                     except Exception as exc:
@@ -1418,13 +1482,16 @@ class UltraOptimizedProcessor:
                             try:
                                 pts = np.array(mf_points[obj_id], dtype=np.float32)
                                 lbs = np.array(mf_labels[obj_id], dtype=np.int32)
-                                _, _, out_ml = self.predictor.add_new_points_or_box(
+                                mf_kwargs = dict(
                                     inference_state=inference_state,
                                     frame_idx=mf_idx,
                                     obj_id=obj_id,
                                     points=pts,
                                     labels=lbs,
                                 )
+                                if bboxes_dict and obj_id in bboxes_dict:
+                                    mf_kwargs["box"] = bboxes_dict[obj_id]
+                                _, _, out_ml = self.predictor.add_new_points_or_box(**mf_kwargs)
                                 del out_ml, pts, lbs
                                 ultra_cleanup_memory()
                             except Exception as exc:
@@ -1461,13 +1528,16 @@ class UltraOptimizedProcessor:
                         try:
                             pts = np.array(points_dict[obj_id], dtype=np.float32)
                             lbs = np.array(labels_dict[obj_id], dtype=np.int32)
-                            _, _, out_ml = self.predictor.add_new_points_or_box(
+                            bw_kwargs = dict(
                                 inference_state=inference_state,
                                 frame_idx=start_frame,
                                 obj_id=obj_id,
                                 points=pts,
                                 labels=lbs,
                             )
+                            if bboxes_dict and obj_id in bboxes_dict:
+                                bw_kwargs["box"] = bboxes_dict[obj_id]
+                            _, _, out_ml = self.predictor.add_new_points_or_box(**bw_kwargs)
                             del out_ml, pts, lbs
                             ultra_cleanup_memory()
                         except Exception as exc:
@@ -1565,13 +1635,16 @@ class UltraOptimizedProcessor:
                                 try:
                                     points = np.array(points_dict[obj_id], dtype=np.float32)
                                     labels = np.array(labels_dict[obj_id], dtype=np.int32)
-                                    _, out_obj_ids, out_mask_logits = self.predictor.add_new_points_or_box(
+                                    ck_kwargs = dict(
                                         inference_state=chunk_inference_state,
                                         frame_idx=local_seed,
                                         obj_id=obj_id,
                                         points=points,
                                         labels=labels,
                                     )
+                                    if bboxes_dict and obj_id in bboxes_dict:
+                                        ck_kwargs["box"] = bboxes_dict[obj_id]
+                                    _, out_obj_ids, out_mask_logits = self.predictor.add_new_points_or_box(**ck_kwargs)
                                     del out_mask_logits, points, labels
                                     ultra_cleanup_memory()
                                 except Exception as exc:
@@ -1691,14 +1764,17 @@ class UltraOptimizedProcessor:
                                         labels = np.array(
                                             labels_dict[obj_id], dtype=np.int32
                                         )
+                                        bwd_kwargs = dict(
+                                            inference_state=chunk_inference_state,
+                                            frame_idx=local_seed_bwd,
+                                            obj_id=obj_id,
+                                            points=points,
+                                            labels=labels,
+                                        )
+                                        if bboxes_dict and obj_id in bboxes_dict:
+                                            bwd_kwargs["box"] = bboxes_dict[obj_id]
                                         _, _, out_mask_logits = (
-                                            self.predictor.add_new_points_or_box(
-                                                inference_state=chunk_inference_state,
-                                                frame_idx=local_seed_bwd,
-                                                obj_id=obj_id,
-                                                points=points,
-                                                labels=labels,
-                                            )
+                                            self.predictor.add_new_points_or_box(**bwd_kwargs)
                                         )
                                         del out_mask_logits, points, labels
                                         ultra_cleanup_memory()
@@ -2160,16 +2236,8 @@ class UltraOptimizedProcessor:
             print("No targets found - skipping ELAN export")
             return
 
-        try:
-            cap = cv2.VideoCapture(video_path)
-            actual_fps = cap.get(cv2.CAP_PROP_FPS)
-            total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
-            cap.release()
-
-            if abs(fps - actual_fps) > 1.0:
-                fps = actual_fps
-        except Exception:
-            pass
+        # FPS is now computed as effective_fps (extracted_frames / duration)
+        # upstream, so no need to re-read from the original video file.
 
         summary = self.overlap_tracker.get_overlap_summary()
 
@@ -2385,3 +2453,100 @@ class UltraOptimizedProcessor:
                         pass
 
         print(f"CSV exported: {csv_path}")
+
+    @staticmethod
+    def _rle_encode(mask):
+        """Run-length encode a binary mask (COCO-style)."""
+        flat = mask.astype(np.uint8).ravel(order="F")
+        diffs = np.diff(flat, prepend=0, append=0)
+        change_indices = np.where(diffs != 0)[0]
+        counts = np.diff(np.concatenate(([0], change_indices, [len(flat)])))
+        # If mask starts with 1, prepend a 0-length run of 0s
+        if flat[0] == 1:
+            counts = np.concatenate(([0], counts))
+        return {"size": [int(mask.shape[0]), int(mask.shape[1])], "counts": counts.tolist()}
+
+    def export_masks_json(self, results, object_names, output_path, progress_callback=None):
+        """Export segmentation masks as JSON with RLE encoding."""
+        import json as _json
+
+        if not results:
+            print("No results to export masks.")
+            return
+
+        roi_info = getattr(self, "roi_info", None)
+        roi_x0 = int(roi_info["x0"]) if roi_info else 0
+        roi_y0 = int(roi_info["y0"]) if roi_info else 0
+        roi_w = int(roi_info["x1"] - roi_info["x0"] + 1) if roi_info else None
+        roi_h = int(roi_info["y1"] - roi_info["y0"] + 1) if roi_info else None
+
+        frames_data = {}
+        total_frames = len(results)
+        processed = 0
+
+        for frame_idx in sorted(results.keys()):
+            frame_results = self._get_frame_results(results, frame_idx)
+            frame_objects = {}
+
+            for obj_id, mask in frame_results.items():
+                mask = self._decompress_mask(mask)
+                if mask is None:
+                    continue
+                if hasattr(mask, "shape") and len(mask.shape) == 3:
+                    mask = mask.squeeze()
+
+                # Resize to ROI dimensions if needed
+                if roi_info and mask is not None and roi_w and roi_h and mask.shape != (roi_h, roi_w):
+                    try:
+                        mask = cv2.resize(mask.astype(np.float32), (roi_w, roi_h), interpolation=cv2.INTER_LINEAR) > 0.5
+                    except Exception:
+                        pass
+
+                mask = mask.astype(np.uint8)
+                ys, xs = np.where(mask > 0)
+
+                if ys.size == 0:
+                    continue
+
+                x0, y0 = int(xs.min()), int(ys.min())
+                x1, y1 = int(xs.max()), int(ys.max())
+                w, h = (x1 - x0 + 1), (y1 - y0 + 1)
+                cx = float(xs.mean())
+                cy = float(ys.mean())
+                area = int(ys.size)
+
+                if roi_info:
+                    x0 += roi_x0
+                    y0 += roi_y0
+                    cx += roi_x0
+                    cy += roi_y0
+
+                obj_name = object_names.get(obj_id, f"Object_{obj_id}")
+                frame_objects[str(obj_id)] = {
+                    "name": obj_name,
+                    "bbox": [x0, y0, w, h],
+                    "centroid": [round(cx, 2), round(cy, 2)],
+                    "area": area,
+                    "mask_rle": self._rle_encode(mask),
+                }
+
+            if frame_objects:
+                frames_data[str(frame_idx)] = frame_objects
+
+            processed += 1
+            if progress_callback and (processed % 100 == 0 or processed == total_frames):
+                try:
+                    progress_callback(processed, total_frames)
+                except Exception:
+                    pass
+
+        output = {
+            "object_names": {str(k): v for k, v in object_names.items()},
+            "total_frames": total_frames,
+            "frames": frames_data,
+        }
+
+        with open(output_path, "w", encoding="utf-8") as f:
+            _json.dump(output, f)
+
+        print(f"Masks JSON exported: {output_path}")

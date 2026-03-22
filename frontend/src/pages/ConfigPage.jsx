@@ -96,13 +96,14 @@ export default function ConfigPage() {
   const [frameInterpolation, setFrameInterpolation] = useState("nearest");
   const [enableBidirectional, setEnableBidirectional] = useState(true);
   const [roiEnabled, setRoiEnabled] = useState(false);
+  const [enhanceTarget, setEnhanceTarget] = useState(false);
   const [roiMargin, setRoiMargin] = useState(0.15);
   const [roiMinSize, setRoiMinSize] = useState(256);
   const [roiMaxCoverage, setRoiMaxCoverage] = useState(0.95);
   const [speedPreset, setSpeedPreset] = useState("slow");
   const [modelKey, setModelKey] = useState("auto");
   const [models, setModels] = useState([
-    { key: "auto", label: "Auto (largest available)", available: true },
+    { key: "auto", label: "Auto (recommended: Base+)", available: true },
   ]);
   const [modelsLoading, setModelsLoading] = useState(true);
   const [modelsError, setModelsError] = useState(null);
@@ -233,7 +234,7 @@ export default function ConfigPage() {
       .then((data) => {
         const apiModels = data.models || [];
         setModels([
-          { key: "auto", label: "Auto (largest available)", available: true },
+          { key: "auto", label: "Auto (recommended: Base+)", available: true },
           ...apiModels,
         ]);
         setModelsLoading(false);
@@ -331,6 +332,7 @@ export default function ConfigPage() {
         process_start_frame: toInt(processStartFrame),
         process_end_frame: toInt(processEndFrame),
         enable_bidirectional: enableBidirectional,
+        enhance_target: enhanceTarget,
       });
       setStatus("Configuration saved!");
       setStatusType("success");
@@ -859,6 +861,16 @@ export default function ConfigPage() {
                         Tracks objects both forward and backward from the reference frame. Uses ~2x processing time.
                       </p>
                     )}
+
+                    <Toggle
+                      id="enhance-target"
+                      labelText={<><DefinitionTooltip definition="Enhances red target markers by boosting red saturation/contrast and muting non-red regions. Helps SAM2 better distinguish red gaze rings from nearby objects like hands." align="bottom">Enhance red target markers</DefinitionTooltip></>}
+                      labelA="Off"
+                      labelB="On"
+                      toggled={enhanceTarget}
+                      onToggle={(checked) => setEnhanceTarget(checked)}
+                      size="sm"
+                    />
                   </div>
                 </AccordionItem>
 

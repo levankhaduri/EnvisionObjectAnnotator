@@ -143,7 +143,7 @@ export default function IntroPage() {
                     margin: "0 auto 2rem",
                   }}
                 >
-                  Annotate objects across multiple frames, track them bidirectionally with SAM2, and detect gaze overlaps for behavioral research.
+                  Annotate objects across multiple frames, track them bidirectionally with SAM2, and detect overlaps between designated objects (e.g., gaze tracker and object; or hand and object).
                 </p>
                 <Button
                   size="lg"
@@ -159,7 +159,7 @@ export default function IntroPage() {
             {[
               { icon: View, title: "Point-based annotation", desc: "Click to mark objects on one or more reference frames" },
               { icon: Video, title: "SAM2 tracking", desc: "Forward and backward propagation with multiple model sizes" },
-              { icon: Analytics, title: "Gaze and overlap detection", desc: "Automatic target overlap tracking with ELAN and CSV export" },
+              { icon: Analytics, title: "Overlap detection", desc: "Automatic target-to-object overlap tracking with ELAN and CSV export" },
               { icon: DocumentExport, title: "Smart frame suggestion", desc: "Automatically find the sharpest, most informative frames to annotate" },
             ].map(({ icon: Icon, title, desc }) => (
               <Column key={title} lg={4} md={4} sm={4}>

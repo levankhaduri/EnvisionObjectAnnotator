@@ -1,5 +1,5 @@
 from fastapi import FastAPI, UploadFile, File, HTTPException
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, StreamingResponse
 from fastapi.middleware.cors import CORSMiddleware
 from pathlib import Path
 from uuid import uuid4
@@ -74,6 +74,30 @@ def _probe_video_fps(video_path):
         fps = _parse_ffprobe_rate(line)
         if fps and fps > 0 and math.isfinite(fps):
             return fps
+    return None
+
+
+def _probe_video_duration(video_path):
+    """Get video duration in seconds using ffprobe."""
+    cmd = [
+        "ffprobe",
+        "-v",
+        "error",
+        "-show_entries",
+        "format=duration",
+        "-of",
+        "default=noprint_wrappers=1:nokey=1",
+        str(video_path),
+    ]
+    result = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+    if result.returncode != 0:
+        return None
+    try:
+        duration = float(result.stdout.strip())
+        if duration > 0 and math.isfinite(duration):
+            return duration
+    except (ValueError, TypeError):
+        pass
     return None
 
 BASE_DIR = Path(__file__).resolve().parent.parent
@@ -355,7 +379,7 @@ def extract_frames(payload: FrameExtractionRequest):
             cmd.extend(["-t", str(duration)])
         else:
             cmd.extend(["-t", str(payload.end_time)])
-    cmd.extend(["-q:v", str(payload.quality), "-start_number", "0", output_pattern])
+    cmd.extend(["-q:v", str(payload.quality), "-vsync", "cfr", "-start_number", "0", output_pattern])
 
     result = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
     if result.returncode != 0:
@@ -373,18 +397,34 @@ def extract_frames(payload: FrameExtractionRequest):
             thumb_cmd.extend(["-t", str(duration)])
         else:
             thumb_cmd.extend(["-t", str(payload.end_time)])
-    thumb_cmd.extend(["-q:v", "5", "-vf", "scale='min(640,iw)':-1", "-start_number", "0", thumb_pattern])
+    thumb_cmd.extend(["-q:v", "5", "-vsync", "cfr", "-vf", "scale='min(640,iw)':-1", "-start_number", "0", thumb_pattern])
     thumb_result = subprocess.run(thumb_cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
     if thumb_result.returncode != 0:
         print(f"[thumbs] generation failed: {thumb_result.stderr.strip()}")
 
     fps = _probe_video_fps(session.video_path)
-    if fps:
-        config = session.config or {}
-        updated_config = {**config, "video_fps": float(fps)}
-        state.update_session(payload.session_id, config=updated_config)
-
     frame_count = len(list(frames_dir.glob("*.jpg")))
+
+    # Compute effective FPS from extracted frame count and video duration
+    effective_fps = fps
+    video_duration = _probe_video_duration(session.video_path)
+    if video_duration and video_duration > 0:
+        # Account for trimming
+        if payload.start_time is not None or payload.end_time is not None:
+            start = payload.start_time or 0.0
+            end = payload.end_time or video_duration
+            video_duration = min(end, video_duration) - start
+        if video_duration > 0 and frame_count > 0:
+            effective_fps = frame_count / video_duration
+
+    config = session.config or {}
+    updated_config = {**config}
+    if fps:
+        updated_config["video_fps"] = float(fps)
+    if effective_fps:
+        updated_config["effective_fps"] = float(effective_fps)
+    state.update_session(payload.session_id, config=updated_config)
+
     ilog.log_frames_extracted(payload.session_id, frame_count, payload.quality)
 
     return {"status": "ok", "frames_dir": str(frames_dir)}
@@ -633,9 +673,18 @@ def add_annotation_points(payload: AnnotationPayload):
     existing["objects"][payload.object_name] = [
         {"x": p.x, "y": p.y, "label": p.label} for p in payload.points
     ]
+    # Save bounding box if provided
+    if payload.bbox:
+        existing.setdefault("bboxes", {})
+        existing["bboxes"][payload.object_name] = {
+            "x1": payload.bbox.x1, "y1": payload.bbox.y1,
+            "x2": payload.bbox.x2, "y2": payload.bbox.y2,
+        }
     prev_name = payload.previous_object_name
     if prev_name and prev_name != payload.object_name:
         existing["objects"].pop(prev_name, None)
+        if "bboxes" in existing:
+            existing["bboxes"].pop(prev_name, None)
     frame_file.write_text(json.dumps(existing, indent=2))
     config = session.config or {}
     if config.get("reference_frame") != payload.frame_index:
@@ -698,11 +747,15 @@ def test_mask(payload: AnnotationPayload):
     ilog.log_test_mask(payload.session_id, payload.frame_index, payload.object_name, len(payload.points))
 
     try:
+        bbox_dict = None
+        if payload.bbox:
+            bbox_dict = payload.bbox.model_dump()
         preview_path = test_mask_preview(
             payload.session_id,
             payload.frame_index,
             payload.object_name,
             [p.model_dump() for p in payload.points],
+            bbox=bbox_dict,
         )
     except Exception as exc:
         raise HTTPException(status_code=500, detail=str(exc))
@@ -813,6 +866,7 @@ def get_results(session_id: str):
         "csv": outputs.get("csv"),
         "elan": outputs.get("elan"),
         "resource_profile": outputs.get("resource_profile"),
+        "masks_json": outputs.get("masks_json"),
     }
     file_exists = {}
     for key, path_str in output_keys.items():
@@ -852,3 +906,46 @@ def download_result(session_id: str, kind: str):
     media_type = mimetypes.guess_type(str(file_path))[0] or "application/octet-stream"
     headers = {"Content-Disposition": f'attachment; filename="{file_path.name}"'}
     return FileResponse(file_path, media_type=media_type, headers=headers)
+
+
+@app.get("/results/download-all/{session_id}")
+def download_all_results(session_id: str):
+    import zipfile
+    import io
+
+    try:
+        session = state.get_session(session_id)
+    except KeyError:
+        raise HTTPException(status_code=404, detail="Session not found")
+
+    outputs = {}
+    if session.config:
+        outputs = session.config.get("outputs", {}) or {}
+
+    # Collect all existing output files
+    files_to_zip = []
+    for key, path_str in outputs.items():
+        if path_str and Path(path_str).exists():
+            files_to_zip.append(Path(path_str))
+
+    if not files_to_zip:
+        raise HTTPException(status_code=404, detail="No output files available")
+
+    # Determine ZIP filename from video stem
+    video_stem = "results"
+    if session.video_path:
+        video_stem = Path(session.video_path).stem
+
+    # Create ZIP in memory
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
+        for file_path in files_to_zip:
+            zf.write(file_path, file_path.name)
+    buf.seek(0)
+
+    zip_filename = f"{video_stem}_ALL_RESULTS.zip"
+    return StreamingResponse(
+        buf,
+        media_type="application/zip",
+        headers={"Content-Disposition": f'attachment; filename="{zip_filename}"'},
+    )
