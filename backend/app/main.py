@@ -367,6 +367,9 @@ def extract_frames(payload: FrameExtractionRequest):
     thumbs_dir.mkdir(parents=True, exist_ok=True)
     output_pattern = str(frames_dir / "%05d.jpg")
 
+    # Probe FPS before extraction so we can force it with -r
+    fps = _probe_video_fps(session.video_path) or 30.0
+
     # Build ffmpeg command with optional trim
     cmd = ["ffmpeg", "-y"]
     if payload.start_time is not None:
@@ -379,7 +382,7 @@ def extract_frames(payload: FrameExtractionRequest):
             cmd.extend(["-t", str(duration)])
         else:
             cmd.extend(["-t", str(payload.end_time)])
-    cmd.extend(["-q:v", str(payload.quality), "-vsync", "cfr", "-start_number", "0", output_pattern])
+    cmd.extend(["-r", str(fps), "-q:v", str(payload.quality), "-vsync", "cfr", "-start_number", "0", output_pattern])
 
     result = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
     if result.returncode != 0:
@@ -397,32 +400,27 @@ def extract_frames(payload: FrameExtractionRequest):
             thumb_cmd.extend(["-t", str(duration)])
         else:
             thumb_cmd.extend(["-t", str(payload.end_time)])
-    thumb_cmd.extend(["-q:v", "5", "-vsync", "cfr", "-vf", "scale='min(640,iw)':-1", "-start_number", "0", thumb_pattern])
+    thumb_cmd.extend(["-r", str(fps), "-q:v", "5", "-vsync", "cfr", "-vf", "scale='min(640,iw)':-1", "-start_number", "0", thumb_pattern])
     thumb_result = subprocess.run(thumb_cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
     if thumb_result.returncode != 0:
         print(f"[thumbs] generation failed: {thumb_result.stderr.strip()}")
 
-    fps = _probe_video_fps(session.video_path)
     frame_count = len(list(frames_dir.glob("*.jpg")))
 
-    # Compute effective FPS from extracted frame count and video duration
-    effective_fps = fps
+    # Validate frame count against expected
     video_duration = _probe_video_duration(session.video_path)
     if video_duration and video_duration > 0:
-        # Account for trimming
+        trimmed_duration = video_duration
         if payload.start_time is not None or payload.end_time is not None:
             start = payload.start_time or 0.0
             end = payload.end_time or video_duration
-            video_duration = min(end, video_duration) - start
-        if video_duration > 0 and frame_count > 0:
-            effective_fps = frame_count / video_duration
+            trimmed_duration = min(end, video_duration) - start
+        expected = fps * trimmed_duration
+        if abs(frame_count - expected) > 2:
+            print(f"[warn] Frame count mismatch: extracted={frame_count}, expected={expected:.0f} ({fps}fps x {trimmed_duration:.2f}s)")
 
     config = session.config or {}
-    updated_config = {**config}
-    if fps:
-        updated_config["video_fps"] = float(fps)
-    if effective_fps:
-        updated_config["effective_fps"] = float(effective_fps)
+    updated_config = {**config, "video_fps": float(fps)}
     state.update_session(payload.session_id, config=updated_config)
 
     ilog.log_frames_extracted(payload.session_id, frame_count, payload.quality)

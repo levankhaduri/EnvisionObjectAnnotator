@@ -1175,7 +1175,17 @@ export default function AnnotationPage() {
                   }}
                   size="sm"
                 />
-                <div style={{ display: "flex", gap: "0.5rem", marginTop: "1rem" }}>
+                <Checkbox
+                  id="mark-as-target"
+                  labelText="Mark as target"
+                  checked={markAsTarget}
+                  onChange={(_, { checked }) => {
+                    setMarkAsTarget(checked);
+                    setTargetToggleTouched(true);
+                  }}
+                  style={{ marginTop: "0.75rem" }}
+                />
+                <div style={{ display: "flex", gap: "0.5rem", marginTop: "0.75rem" }}>
                   <Button kind="secondary" size="sm" onClick={handleAddObject} renderIcon={Add}>
                     Add
                   </Button>
