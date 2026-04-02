@@ -934,11 +934,13 @@ def download_all_results(session_id: str):
     if session.video_path:
         video_stem = Path(session.video_path).stem
 
-    # Create ZIP in memory
+    # Create ZIP in memory (skip compression for already-compressed formats)
+    text_exts = {'.csv', '.eaf', '.json', '.html', '.xml', '.txt'}
     buf = io.BytesIO()
-    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
+    with zipfile.ZipFile(buf, "w") as zf:
         for file_path in files_to_zip:
-            zf.write(file_path, file_path.name)
+            compress = zipfile.ZIP_DEFLATED if file_path.suffix.lower() in text_exts else zipfile.ZIP_STORED
+            zf.write(file_path, file_path.name, compress_type=compress)
     buf.seek(0)
 
     zip_filename = f"{video_stem}_ALL_RESULTS.zip"

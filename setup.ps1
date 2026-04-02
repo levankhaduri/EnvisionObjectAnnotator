@@ -73,6 +73,21 @@ if ($LASTEXITCODE -ne 0) {
     & $pip install torch torchvision torchaudio 2>&1 | Where-Object { $_ -notmatch "notice|WARNING" }
 }
 
+# Verify GPU availability
+$cudaCheck = & $python_venv -c "import torch; print(torch.cuda.is_available())" 2>&1
+if ($cudaCheck -match "True") {
+    $gpuName = & $python_venv -c "import torch; print(torch.cuda.get_device_name(0))" 2>&1
+    Write-Host "  GPU detected: $gpuName" -ForegroundColor Green
+} else {
+    Write-Host ""
+    Write-Host "  WARNING: No GPU detected! Processing will be very slow." -ForegroundColor Red
+    Write-Host "  To enable GPU acceleration:" -ForegroundColor Yellow
+    Write-Host "    1. Install NVIDIA drivers: https://www.nvidia.com/drivers" -ForegroundColor Yellow
+    Write-Host "    2. Install CUDA 12.1+: https://developer.nvidia.com/cuda-downloads" -ForegroundColor Yellow
+    Write-Host "    3. Re-run this setup script" -ForegroundColor Yellow
+    Write-Host ""
+}
+
 Pop-Location
 Write-Host "  Backend setup complete" -ForegroundColor Green
 
