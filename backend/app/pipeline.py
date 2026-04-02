@@ -418,6 +418,7 @@ class ImprovedTargetOverlapTracker:
                                         {
                                             "object_id": obj_id,
                                             "object_name": obj_name,
+                                            "overlap_pct": overlap_info.get("max_overlap_pct", 0),
                                             "event_type": "looking_at",
                                             "relationship_desc": f"OVERLAPS {obj_name} (continuing)",
                                         }
@@ -428,6 +429,7 @@ class ImprovedTargetOverlapTracker:
                                         {
                                             "object_id": obj_id,
                                             "object_name": obj_name,
+                                            "overlap_pct": overlap_info.get("max_overlap_pct", 0),
                                             "event_type": "looking_at",
                                             "relationship_desc": f"LOOKING AT {obj_name}",
                                         }
@@ -465,7 +467,10 @@ class ImprovedTargetOverlapTracker:
                 current_overlaps = []
                 if target_id in frame_analysis.get("target_overlaps", {}):
                     looking_at_objects = frame_analysis["target_overlaps"][target_id]
-                    current_overlaps = [obj["object_name"] for obj in looking_at_objects]
+                    current_overlaps = [
+                        (obj["object_name"], obj.get("overlap_pct", 0))
+                        for obj in looking_at_objects
+                    ]
 
                 self._update_overlap_event(target_id, frame_idx, current_overlaps)
 
@@ -478,36 +483,45 @@ class ImprovedTargetOverlapTracker:
                 "looking_at_events": [],
             }
 
-    def _update_overlap_event(self, target_id, frame_idx, overlapping_names):
+    def _update_overlap_event(self, target_id, frame_idx, overlapping_tuples):
+        """Update overlap events. overlapping_tuples is list of (name, pct)."""
         events = self.overlap_events[target_id]
-        current_overlap_set = set(overlapping_names)
+        current_names = set(name for name, _ in overlapping_tuples)
+        overlap_pcts = {name: pct for name, pct in overlapping_tuples}
 
         if events and events[-1].get("end_frame") is None:
             last_event = events[-1]
             last_overlap_set = set(last_event["overlapping_objects"])
 
-            if current_overlap_set == last_overlap_set and current_overlap_set:
+            if current_names == last_overlap_set and current_names:
                 last_event["duration_frames"] = frame_idx - last_event["start_frame"] + 1
+                # Update running average overlap percentages
+                n = last_event["duration_frames"]
+                for name, pct in overlap_pcts.items():
+                    prev = last_event.get("overlap_pcts", {}).get(name, pct)
+                    last_event.setdefault("overlap_pcts", {})[name] = prev + (pct - prev) / n
             else:
                 last_event["end_frame"] = frame_idx - 1
                 last_event["duration_frames"] = last_event["end_frame"] - last_event["start_frame"] + 1
 
-                if current_overlap_set:
+                if current_names:
                     new_event = {
                         "start_frame": frame_idx,
                         "end_frame": None,
                         "duration_frames": 1,
-                        "overlapping_objects": list(overlapping_names),
+                        "overlapping_objects": [name for name, _ in overlapping_tuples],
+                        "overlap_pcts": overlap_pcts,
                         "event_type": "looking_at",
                     }
                     events.append(new_event)
         else:
-            if current_overlap_set:
+            if current_names:
                 new_event = {
                     "start_frame": frame_idx,
                     "end_frame": None,
                     "duration_frames": 1,
-                    "overlapping_objects": list(overlapping_names),
+                    "overlapping_objects": [name for name, _ in overlapping_tuples],
+                    "overlap_pcts": overlap_pcts,
                     "event_type": "looking_at",
                 }
                 events.append(new_event)
@@ -2295,12 +2309,12 @@ class UltraOptimizedProcessor:
                 start_slot = time_slot_refs[start_ms]
                 end_slot = time_slot_refs[end_ms]
 
-                overlapping_objects_str = ", ".join(event["overlapping_objects"])
-
-                if len(event["overlapping_objects"]) == 1:
-                    annotation_value = f"Looking at: {overlapping_objects_str}"
-                else:
-                    annotation_value = f"Looking at {len(event['overlapping_objects'])} objects: {overlapping_objects_str}"
+                overlap_pcts = event.get("overlap_pcts", {})
+                parts = []
+                for obj_name in event["overlapping_objects"]:
+                    pct = overlap_pcts.get(obj_name, 0)
+                    parts.append(f"{obj_name} ({pct * 100:.0f}%)")
+                annotation_value = f"{target_name} overlapped by {', '.join(parts)}"
 
                 annotation = f'''        <ANNOTATION>
             <ALIGNABLE_ANNOTATION ANNOTATION_ID="a{annotation_id}" TIME_SLOT_REF1="{start_slot}" TIME_SLOT_REF2="{end_slot}">

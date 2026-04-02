@@ -9,6 +9,7 @@ import {
   listFrames,
   createSampleClip,
   detectGreyStart,
+  runDiagnostics,
 } from "../api.js";
 import {
   Button,
@@ -107,6 +108,7 @@ export default function ConfigPage() {
   ]);
   const [modelsLoading, setModelsLoading] = useState(true);
   const [modelsError, setModelsError] = useState(null);
+  const [gpuInfo, setGpuInfo] = useState(null);
   const [framesReady, setFramesReady] = useState(false);
   const [frameCount, setFrameCount] = useState(0);
   const [videoUploaded, setVideoUploaded] = useState(false);
@@ -226,7 +228,7 @@ export default function ConfigPage() {
       });
   }, [sessionId]);
 
-  // Fetch models
+  // Fetch models + GPU diagnostics
   useEffect(() => {
     setModelsLoading(true);
     setModelsError(null);
@@ -243,6 +245,16 @@ export default function ConfigPage() {
         setModelsError("Could not load models. Is the backend running?");
         setModelsLoading(false);
       });
+    runDiagnostics()
+      .then((data) => {
+        const pt = data.pytorch || {};
+        if (pt.cuda_available) {
+          setGpuInfo({ type: "green", label: `GPU: ${pt.gpu_name || "CUDA"} (${pt.gpu_memory_gb || "?"}GB)` });
+        } else {
+          setGpuInfo({ type: "red", label: "CPU mode (no GPU detected)" });
+        }
+      })
+      .catch(() => {});
   }, []);
 
   async function handleFileUpload(files) {
@@ -388,6 +400,12 @@ export default function ConfigPage() {
         <div className="page-container">
           {/* Progress indicator */}
           <div style={{ marginBottom: "2rem" }}>
+            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: "0.5rem" }}>
+              <div style={{ flex: 1 }} />
+              {gpuInfo && (
+                <Tag type={gpuInfo.type} size="sm">{gpuInfo.label}</Tag>
+              )}
+            </div>
             <ProgressIndicator currentIndex={currentStep} spaceEqually>
               <ProgressStep label="Upload" secondaryLabel="Select video" />
               <ProgressStep label="Extract" secondaryLabel="Process frames" />

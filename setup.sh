@@ -73,6 +73,28 @@ else
     $PIP install torch torchvision torchaudio -q
 fi
 
+# Verify GPU availability
+CUDA_CHECK=$($PYTHON -c "import torch; print(torch.cuda.is_available())" 2>&1)
+if [[ "$CUDA_CHECK" == "True" ]]; then
+    GPU_NAME=$($PYTHON -c "import torch; print(torch.cuda.get_device_name(0))" 2>&1)
+    echo "  GPU detected: $GPU_NAME"
+elif [[ "$(uname)" == "Darwin" ]]; then
+    MPS_CHECK=$($PYTHON -c "import torch; print(torch.backends.mps.is_available())" 2>&1)
+    if [[ "$MPS_CHECK" == "True" ]]; then
+        echo "  Apple GPU (MPS) detected"
+    else
+        echo "  WARNING: No GPU detected! Processing will be very slow."
+    fi
+else
+    echo ""
+    echo "  WARNING: No GPU detected! Processing will be very slow."
+    echo "  To enable GPU acceleration:"
+    echo "    1. Install NVIDIA drivers: https://www.nvidia.com/drivers"
+    echo "    2. Install CUDA 12.1+: https://developer.nvidia.com/cuda-downloads"
+    echo "    3. Re-run this setup script"
+    echo ""
+fi
+
 cd ..
 echo "  Backend setup complete"
 
