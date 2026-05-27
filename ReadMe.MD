@@ -46,18 +46,43 @@ The tool was developed as part of the **EnvisionBOXBABY project**, with a focus 
 ## Quick Start
 
 ### Prerequisites
-- **Python 3.10+** — [python.org](https://python.org)
-- **Node.js 18+** — [nodejs.org](https://nodejs.org)
-- **Git** — [git-scm.com](https://git-scm.com)
-- **ffmpeg** — [ffmpeg.org](https://ffmpeg.org/download.html) (add to PATH)
+
+Install each of these before continuing:
+
+- **Python 3.10+** — [python.org](https://python.org) — on the download page, check **"Add Python to PATH"** during installation
+- **Node.js 18+** — [nodejs.org](https://nodejs.org) — use the LTS version
+- **Git** — [git-scm.com](https://git-scm.com) — use default options during installation
+- **ffmpeg** — [ffmpeg.org](https://ffmpeg.org/download.html) — after installing, you must [add it to your system PATH](https://www.wikihow.com/Install-FFmpeg-on-Windows)
+
+To verify everything is installed, open a terminal and run:
+```
+python --version
+node --version
+git --version
+ffmpeg -version
+```
+Each command should print a version number (not an error).
+
+### 0. Open a terminal in the right place
+
+**Windows:** Open the Start menu, search for **PowerShell**, and open it. Then run this one-time command to allow setup scripts to run:
+```powershell
+Set-ExecutionPolicy -ExecutionPolicy RemoteSigned -Scope CurrentUser
+```
+Type `Y` and press Enter when prompted.
+
+**Mac/Linux:** Open **Terminal** from your Applications.
 
 ### 1. Clone
 ```bash
-git clone https://github.com/DavAhm/EnvisionObjectAnnotator.git
+git clone https://github.com/levankhaduri/EnvisionObjectAnnotator.git
 cd EnvisionObjectAnnotator
 ```
 
 ### 2. Setup (one command)
+
+> This downloads ~1.5 GB of model files and installs all dependencies. It can take **10–20 minutes** depending on your internet speed. Leave the terminal open and wait for "Setup Complete!" to appear.
+
 **Windows (PowerShell):**
 ```powershell
 .\setup.ps1
@@ -67,8 +92,6 @@ cd EnvisionObjectAnnotator
 ```bash
 chmod +x setup.sh && ./setup.sh
 ```
-
-This installs everything: Python venv, SAM2, EdgeTAM, model checkpoints, and frontend.
 
 ### 3. Run
 **Windows:**
@@ -81,7 +104,7 @@ This installs everything: Python venv, SAM2, EdgeTAM, model checkpoints, and fro
 ./run.sh
 ```
 
-Then open **http://localhost:5173**
+Then open **http://localhost:5173** in your browser.
 
 ---
 

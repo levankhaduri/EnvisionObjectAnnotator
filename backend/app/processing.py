@@ -40,31 +40,31 @@ MODEL_CATALOG = [
         "key": "sam2.1_hiera_l",
         "label": "SAM2.1 Large (hiera_l)",
         "checkpoint": REPO_DIR / "checkpoints" / "sam2.1_hiera_large.pt",
-        "config": REPO_DIR / "configs" / "sam2.1" / "sam2.1_hiera_l.yaml",
+        "config": "configs/sam2.1/sam2.1_hiera_l.yaml",
     },
     {
         "key": "sam2.1_hiera_b+",
         "label": "SAM2.1 Base+ (hiera_b+)",
         "checkpoint": REPO_DIR / "checkpoints" / "sam2.1_hiera_base_plus.pt",
-        "config": REPO_DIR / "configs" / "sam2.1" / "sam2.1_hiera_b+.yaml",
+        "config": "configs/sam2.1/sam2.1_hiera_b+.yaml",
     },
     {
         "key": "sam2.1_hiera_s",
         "label": "SAM2.1 Small (hiera_s)",
         "checkpoint": REPO_DIR / "checkpoints" / "sam2.1_hiera_small.pt",
-        "config": REPO_DIR / "configs" / "sam2.1" / "sam2.1_hiera_s.yaml",
+        "config": "configs/sam2.1/sam2.1_hiera_s.yaml",
     },
     {
         "key": "sam2.1_hiera_t",
         "label": "SAM2.1 Tiny (hiera_t)",
         "checkpoint": REPO_DIR / "checkpoints" / "sam2.1_hiera_tiny.pt",
-        "config": REPO_DIR / "configs" / "sam2.1" / "sam2.1_hiera_t.yaml",
+        "config": "configs/sam2.1/sam2.1_hiera_t.yaml",
     },
     {
         "key": "edgetam",
         "label": "EdgeTAM (edgetam)",
         "checkpoint": REPO_DIR / "EdgeTAM" / "checkpoints" / "edgetam.pt",
-        "config": REPO_DIR / "configs" / "edgetam.yaml",
+        "config": "configs/edgetam.yaml",
     },
 ]
 
