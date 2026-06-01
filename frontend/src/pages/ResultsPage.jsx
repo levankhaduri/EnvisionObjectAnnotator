@@ -438,7 +438,7 @@ export default function ResultsPage() {
                 </h3>
                 <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "0.75rem" }}>
                   <div style={{ padding: "0.75rem", backgroundColor: "#f4f4f4", borderRadius: "4px", textAlign: "center" }}>
-                    <div style={{ fontSize: "0.75rem", color: "#6f6f6f" }}>Events</div>
+                    <div style={{ fontSize: "0.75rem", color: "#6f6f6f" }}>Objects</div>
                     <div style={{ fontSize: "1.25rem", fontWeight: 600 }}>{profiling?.objects_total ?? "---"}</div>
                   </div>
                   <div style={{ padding: "0.75rem", backgroundColor: "#f4f4f4", borderRadius: "4px", textAlign: "center" }}>
