@@ -1,8 +1,37 @@
 # EnvisionObjectAnnotator Setup Script (Windows)
 # Run: .\setup.ps1
 
-# Don't use Stop - pip outputs notices to stderr which breaks the script
+# PSScriptAnalyzer does not track variable usage inside native-command
+# argument lists (e.g. `git checkout $SAM2_REF`), so it falsely flags
+# $SAM2_REF / $EDGETAM_REF as unused. Suppress that one rule.
+[Diagnostics.CodeAnalysis.SuppressMessageAttribute(
+    'PSUseDeclaredVarsMoreThanAssignments', '',
+    Justification = 'Refs are passed to git checkout as native-command args.'
+)]
+param()
+
+# Don't use Stop - pip writes deprecation notices to stderr by design and
+# that would terminate the script prematurely. We rely on $LASTEXITCODE
+# checks (via Assert-LastExit) after each native command for real failures.
 $ErrorActionPreference = "Continue"
+
+# Pin upstream SAM2 / EdgeTAM refs here. Leaving these at "main" means a
+# force-push or layout change upstream can break a fresh install with no
+# warning. Replace with a specific tag or SHA before cutting a release.
+# Example: $SAM2_REF = "v2.1.0"; $EDGETAM_REF = "abc1234"
+$SAM2_REF = "main"
+$EDGETAM_REF = "main"
+
+function Assert-LastExit {
+    param([string]$Step)
+    if ($LASTEXITCODE -ne 0) {
+        Write-Host ""
+        Write-Host "ERROR: $Step failed (exit $LASTEXITCODE)." -ForegroundColor Red
+        Write-Host "Re-run with output visible to diagnose:" -ForegroundColor Yellow
+        Write-Host "  .\setup.ps1 2>&1 | Tee-Object setup.log" -ForegroundColor Yellow
+        exit 1
+    }
+}
 
 Write-Host "`n========================================" -ForegroundColor Cyan
 Write-Host "  EnvisionObjectAnnotator Setup" -ForegroundColor Cyan
@@ -62,15 +91,19 @@ $python_venv = ".\.venv\Scripts\python.exe"
 
 Write-Host "  Installing backend requirements..." -ForegroundColor Cyan
 & $python_venv -m pip install --upgrade pip 2>&1 | Out-Null
+Assert-LastExit "pip upgrade"
 & $pip install -r requirements.txt 2>&1 | Where-Object { $_ -notmatch "notice|WARNING" }
+Assert-LastExit "pip install -r requirements.txt"
 & $pip install numpy matplotlib tqdm opencv-python psutil 2>&1 | Where-Object { $_ -notmatch "notice|WARNING" }
+Assert-LastExit "pip install numpy/matplotlib/tqdm/opencv-python/psutil"
 
 # Install PyTorch (with CUDA if available)
 Write-Host "  Installing PyTorch (this may take a few minutes)..." -ForegroundColor Cyan
 & $pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu121 2>&1 | Out-Null
 if ($LASTEXITCODE -ne 0) {
-    Write-Host "  CUDA install failed, trying CPU version..." -ForegroundColor Yellow
+    Write-Host "  CUDA wheel install failed, trying CPU version..." -ForegroundColor Yellow
     & $pip install torch torchvision torchaudio 2>&1 | Where-Object { $_ -notmatch "notice|WARNING" }
+    Assert-LastExit "pip install torch (CPU fallback)"
 }
 
 # Verify GPU availability
@@ -92,23 +125,34 @@ Pop-Location
 Write-Host "  Backend setup complete" -ForegroundColor Green
 
 # Install SAM2
-Write-Host "`n[3/6] Installing SAM2..." -ForegroundColor Yellow
+Write-Host "`n[3/6] Installing SAM2 (ref: $SAM2_REF)..." -ForegroundColor Yellow
 if (-not (Test-Path "sam2")) {
     git clone https://github.com/facebookresearch/sam2.git --quiet
+    Assert-LastExit "git clone sam2"
 }
+git -C sam2 fetch --quiet --tags
+git -C sam2 checkout --quiet $SAM2_REF
+Assert-LastExit "git checkout sam2 $SAM2_REF"
 Push-Location sam2
 & "..\backend\.venv\Scripts\pip.exe" install -e . 2>&1 | Out-Null
+Assert-LastExit "pip install -e sam2"
 Pop-Location
 Write-Host "  SAM2 installed" -ForegroundColor Green
 
 # Install EdgeTAM (optional but recommended)
-Write-Host "`n[4/6] Installing EdgeTAM..." -ForegroundColor Yellow
+Write-Host "`n[4/6] Installing EdgeTAM (ref: $EDGETAM_REF)..." -ForegroundColor Yellow
 if (-not (Test-Path "EdgeTAM")) {
     git clone https://github.com/facebookresearch/EdgeTAM.git --quiet
+    Assert-LastExit "git clone EdgeTAM"
 }
+git -C EdgeTAM fetch --quiet --tags
+git -C EdgeTAM checkout --quiet $EDGETAM_REF
+Assert-LastExit "git checkout EdgeTAM $EDGETAM_REF"
 Push-Location EdgeTAM
 & "..\backend\.venv\Scripts\pip.exe" install -e . 2>&1 | Out-Null
+Assert-LastExit "pip install -e EdgeTAM"
 & "..\backend\.venv\Scripts\pip.exe" install timm 2>&1 | Out-Null
+Assert-LastExit "pip install timm"
 Pop-Location
 Write-Host "  EdgeTAM installed" -ForegroundColor Green
 
@@ -155,6 +199,7 @@ Write-Host "  Checkpoints downloaded" -ForegroundColor Green
 Write-Host "`n[6/6] Setting up frontend (Node.js)..." -ForegroundColor Yellow
 Push-Location frontend
 npm install --silent 2>&1 | Out-Null
+Assert-LastExit "npm install (frontend)"
 Pop-Location
 Write-Host "  Frontend setup complete" -ForegroundColor Green
 

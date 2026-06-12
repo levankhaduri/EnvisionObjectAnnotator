@@ -35,36 +35,51 @@ REPO_DIR = BASE_DIR.parent
 SESSIONS_DIR = BASE_DIR / "data" / "sessions"
 
 
+# Each entry exposes two fields for the model config:
+#   * config_name -- the *relative* Hydra config key that we hand to
+#     build_sam2_video_predictor / build_sam2. Hydra's compose() interprets
+#     its config_name argument as a name relative to the registered search
+#     path (sam2's package configs/ dir), and strips any leading "/". An
+#     absolute filesystem path here therefore fails on Linux/Singularity
+#     with "Cannot find primary config 'opt/.../configs/...'". Keep this
+#     value as a forward-slash string.
+#   * config_path -- the absolute Path used *only* by list_available_models
+#     to flag obviously broken installs (repo's configs/ directory missing).
 MODEL_CATALOG = [
     {
         "key": "sam2.1_hiera_l",
         "label": "SAM2.1 Large (hiera_l)",
         "checkpoint": REPO_DIR / "checkpoints" / "sam2.1_hiera_large.pt",
-        "config": REPO_DIR / "configs" / "sam2.1" / "sam2.1_hiera_l.yaml",
+        "config_name": "configs/sam2.1/sam2.1_hiera_l.yaml",
+        "config_path": REPO_DIR / "configs" / "sam2.1" / "sam2.1_hiera_l.yaml",
     },
     {
         "key": "sam2.1_hiera_b+",
         "label": "SAM2.1 Base+ (hiera_b+)",
         "checkpoint": REPO_DIR / "checkpoints" / "sam2.1_hiera_base_plus.pt",
-        "config": REPO_DIR / "configs" / "sam2.1" / "sam2.1_hiera_b+.yaml",
+        "config_name": "configs/sam2.1/sam2.1_hiera_b+.yaml",
+        "config_path": REPO_DIR / "configs" / "sam2.1" / "sam2.1_hiera_b+.yaml",
     },
     {
         "key": "sam2.1_hiera_s",
         "label": "SAM2.1 Small (hiera_s)",
         "checkpoint": REPO_DIR / "checkpoints" / "sam2.1_hiera_small.pt",
-        "config": REPO_DIR / "configs" / "sam2.1" / "sam2.1_hiera_s.yaml",
+        "config_name": "configs/sam2.1/sam2.1_hiera_s.yaml",
+        "config_path": REPO_DIR / "configs" / "sam2.1" / "sam2.1_hiera_s.yaml",
     },
     {
         "key": "sam2.1_hiera_t",
         "label": "SAM2.1 Tiny (hiera_t)",
         "checkpoint": REPO_DIR / "checkpoints" / "sam2.1_hiera_tiny.pt",
-        "config": REPO_DIR / "configs" / "sam2.1" / "sam2.1_hiera_t.yaml",
+        "config_name": "configs/sam2.1/sam2.1_hiera_t.yaml",
+        "config_path": REPO_DIR / "configs" / "sam2.1" / "sam2.1_hiera_t.yaml",
     },
     {
         "key": "edgetam",
         "label": "EdgeTAM (edgetam)",
         "checkpoint": REPO_DIR / "EdgeTAM" / "checkpoints" / "edgetam.pt",
-        "config": REPO_DIR / "configs" / "edgetam.yaml",
+        "config_name": "configs/edgetam.yaml",
+        "config_path": REPO_DIR / "configs" / "edgetam.yaml",
     },
 ]
 
@@ -77,7 +92,7 @@ _VIDEO_PREDICTOR_CACHE = None  # (cache_key, predictor, device) or None
 def list_available_models():
     models = []
     for item in MODEL_CATALOG:
-        config_path = item.get("config")
+        config_path = item.get("config_path")
         config_ok = config_path.exists() if isinstance(config_path, Path) else True
         models.append(
             {
@@ -121,7 +136,7 @@ def _evict_image_predictor_cache():
 
 def _resolve_model_config(model_key=None):
     entry = _select_model_entry(model_key)
-    return str(entry["config"]), entry["checkpoint"]
+    return entry["config_name"], entry["checkpoint"]
 
 
 def _select_model_entry(model_key=None):
@@ -130,7 +145,7 @@ def _select_model_entry(model_key=None):
             if item["key"] == model_key:
                 if not item["checkpoint"].exists():
                     raise FileNotFoundError(f"Checkpoint missing for model {model_key}")
-                config_path = item.get("config")
+                config_path = item.get("config_path")
                 if config_path and isinstance(config_path, Path) and not config_path.exists():
                     raise FileNotFoundError(f"Config missing for model {model_key}")
                 return item
@@ -139,7 +154,7 @@ def _select_model_entry(model_key=None):
     # Try the recommended default model first
     for item in MODEL_CATALOG:
         if item["key"] == DEFAULT_MODEL_KEY:
-            config_path = item.get("config")
+            config_path = item.get("config_path")
             config_ok = config_path.exists() if isinstance(config_path, Path) else True
             if item["checkpoint"].exists() and config_ok:
                 return item
@@ -147,7 +162,7 @@ def _select_model_entry(model_key=None):
 
     # Fall back to first available model
     for item in MODEL_CATALOG:
-        config_path = item.get("config")
+        config_path = item.get("config_path")
         config_ok = config_path.exists() if isinstance(config_path, Path) else True
         if item["checkpoint"].exists() and config_ok:
             return item
@@ -176,7 +191,7 @@ def _build_predictor(use_mps=False, model_key=None, use_cache=True):
         device = torch.device("cpu")
 
     entry = _select_model_entry(model_key=model_key)
-    model_cfg, checkpoint = str(entry["config"]), entry["checkpoint"]
+    model_cfg, checkpoint = entry["config_name"], entry["checkpoint"]
     predictor = build_sam2_video_predictor(model_cfg, str(checkpoint), device=device)
     if hasattr(predictor, "model"):
         try:
@@ -207,7 +222,7 @@ def _build_image_predictor(use_mps=False, model_key=None):
         device = torch.device("cpu")
 
     entry = _select_model_entry(model_key=model_key)
-    model_cfg, checkpoint = str(entry["config"]), entry["checkpoint"]
+    model_cfg, checkpoint = entry["config_name"], entry["checkpoint"]
     sam_model = build_sam2(model_cfg, str(checkpoint), device=device)
     try:
         sam_model = sam_model.to(device=device, dtype=torch.float32)

@@ -35,8 +35,21 @@ cd backend
 BACKEND_PID=$!
 cd ..
 
-# Wait for backend to start
-sleep 3
+# Poll /health until the backend responds. Torch + SAM2 import regularly
+# takes longer than the old hardcoded 3s wait.
+echo "  Waiting for backend to be ready (up to 60s)..."
+backend_ready=0
+for i in $(seq 1 60); do
+    if curl -sf --max-time 1 http://localhost:8000/health > /dev/null 2>&1; then
+        backend_ready=1
+        echo "  Backend ready after ${i}s"
+        break
+    fi
+    sleep 1
+done
+if [ "$backend_ready" -ne 1 ]; then
+    echo "  WARNING: Backend did not respond within 60s. Check stderr above."
+fi
 
 # Start frontend
 echo "Starting frontend dev server..."
@@ -45,8 +58,20 @@ npm run dev &
 FRONTEND_PID=$!
 cd ..
 
-# Wait for frontend to start
-sleep 3
+# Poll the Vite dev server until it serves something.
+echo "  Waiting for frontend to be ready (up to 30s)..."
+frontend_ready=0
+for i in $(seq 1 30); do
+    if curl -sf --max-time 1 http://localhost:5173 > /dev/null 2>&1; then
+        frontend_ready=1
+        echo "  Frontend ready after ${i}s"
+        break
+    fi
+    sleep 1
+done
+if [ "$frontend_ready" -ne 1 ]; then
+    echo "  WARNING: Frontend did not respond within 30s."
+fi
 
 echo ""
 echo "========================================"

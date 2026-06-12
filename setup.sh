@@ -2,7 +2,14 @@
 # EnvisionObjectAnnotator Setup Script (Mac/Linux)
 # Run: chmod +x setup.sh && ./setup.sh
 
-set -e
+set -euo pipefail
+
+# Pin upstream SAM2 / EdgeTAM refs here. Leaving these at "main" means a
+# force-push or layout change upstream can break a fresh install with no
+# warning. Replace with a specific tag or SHA before cutting a release.
+# Example: SAM2_REF=v2.1.0  EDGETAM_REF=abc1234
+SAM2_REF="${SAM2_REF:-main}"
+EDGETAM_REF="${EDGETAM_REF:-main}"
 
 echo ""
 echo "========================================"
@@ -68,9 +75,12 @@ if [[ "$(uname)" == "Darwin" ]]; then
     # macOS - use default (MPS support)
     $PIP install torch torchvision torchaudio -q
 else
-    # Linux - try CUDA first
-    $PIP install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu121 -q 2>/dev/null || \
-    $PIP install torch torchvision torchaudio -q
+    # Linux - try CUDA first, fall back to CPU build. Either must succeed,
+    # otherwise set -e would not catch the failure because of the `||`.
+    if ! $PIP install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu121 -q 2>/dev/null; then
+        echo "  CUDA wheel install failed, trying CPU version..."
+        $PIP install torch torchvision torchaudio -q
+    fi
 fi
 
 # Verify GPU availability
@@ -100,10 +110,12 @@ echo "  Backend setup complete"
 
 # Install SAM2
 echo ""
-echo "[3/6] Installing SAM2..."
+echo "[3/6] Installing SAM2 (ref: $SAM2_REF)..."
 if [ ! -d "sam2" ]; then
     git clone https://github.com/facebookresearch/sam2.git -q
 fi
+git -C sam2 fetch --quiet --tags
+git -C sam2 checkout --quiet "$SAM2_REF"
 cd sam2
 ../backend/.venv/bin/pip install -e . -q
 cd ..
@@ -111,10 +123,12 @@ echo "  SAM2 installed"
 
 # Install EdgeTAM
 echo ""
-echo "[4/6] Installing EdgeTAM..."
+echo "[4/6] Installing EdgeTAM (ref: $EDGETAM_REF)..."
 if [ ! -d "EdgeTAM" ]; then
     git clone https://github.com/facebookresearch/EdgeTAM.git -q
 fi
+git -C EdgeTAM fetch --quiet --tags
+git -C EdgeTAM checkout --quiet "$EDGETAM_REF"
 cd EdgeTAM
 ../backend/.venv/bin/pip install -e . -q
 ../backend/.venv/bin/pip install timm -q
