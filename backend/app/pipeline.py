@@ -358,10 +358,11 @@ class ImprovedTargetOverlapTracker:
         summary = {}
         for target_id, events in self.overlap_events.items():
             target_name = self.target_objects[target_id]
+            closed = [e for e in events if e.get("end_frame") is not None]
             summary[target_name] = {
-                "total_events": len(events),
-                "events": events,
-                "total_overlap_frames": sum(event["duration_frames"] for event in events),
+                "total_events": len(closed),
+                "events": closed,
+                "total_overlap_frames": sum(e["duration_frames"] for e in closed),
             }
         return summary
 
@@ -2272,7 +2273,9 @@ class UltraOptimizedProcessor:
 
         all_time_points = set()
         for target_name, target_data in summary.items():
-            for event in sorted(target_data["events"], key=lambda e: e["start_frame"]):
+            for event in sorted(target_data["events"], key=lambda e: e["start_frame"] or 0):
+                if event.get("start_frame") is None or event.get("end_frame") is None:
+                    continue
                 start_frame_corrected = event["start_frame"] + frame_offset
                 end_frame_corrected = event["end_frame"] + frame_offset
 
@@ -2297,7 +2300,9 @@ class UltraOptimizedProcessor:
             tier_id = target_name.upper().replace(" ", "_").replace("-", "_")
             tier_content += f'    <TIER DEFAULT_LOCALE="en" LINGUISTIC_TYPE_REF="default" TIER_ID="{tier_id}_LOOKING_AT">\n'
 
-            for event in sorted(target_data["events"], key=lambda e: e["start_frame"]):
+            for event in sorted(target_data["events"], key=lambda e: e["start_frame"] or 0):
+                if event.get("start_frame") is None or event.get("end_frame") is None:
+                    continue
                 start_frame_corrected = event["start_frame"] + frame_offset
                 end_frame_corrected = event["end_frame"] + frame_offset
 
