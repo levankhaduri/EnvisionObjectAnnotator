@@ -517,6 +517,13 @@ class HeadlessProcessor:
     def cleanup_mask_store(self):
         return self._processor.cleanup_mask_store()
 
+    def get_event_count(self):
+        try:
+            summary = self._processor.overlap_tracker.get_overlap_summary()
+            return sum(len(data["events"]) for data in summary.values())
+        except Exception:
+            return 0
+
 
 def _set_status(session_id, status, progress, message):
     state.set_processing(
@@ -757,6 +764,7 @@ def run_processing(session_id):
         process_end_frame = None
     use_mps = bool(config.get("use_mps", False))
     enable_bidirectional = bool(config.get("enable_bidirectional", False))
+    overlap_mode = config.get("overlap_mode") or "both"
     model_key = config.get("model_key") or "auto"
     resolved_model_key = model_key
     model_label = model_key
@@ -875,6 +883,7 @@ def run_processing(session_id):
             process_end_frame=process_end_frame,
             enable_bidirectional=enable_bidirectional,
             enhance_target=enhance_target,
+            overlap_mode=overlap_mode,
         )
         wrapped = HeadlessProcessor(processor)
     except ImportError as exc:
@@ -1099,12 +1108,28 @@ def run_processing(session_id):
 
         finished_at = time.perf_counter()
         processing_seconds = max(processing_done - model_done, 1e-6)
+        def _object_frame_stats(res, obj_names):
+            stats = {}
+            for frame_idx, frame_data in res.items():
+                for obj_id in frame_data:
+                    name = obj_names.get(int(obj_id), str(obj_id))
+                    if name not in stats:
+                        stats[name] = {"frames": 0, "first": frame_idx, "last": frame_idx}
+                    stats[name]["frames"] += 1
+                    if frame_idx < stats[name]["first"]:
+                        stats[name]["first"] = frame_idx
+                    if frame_idx > stats[name]["last"]:
+                        stats[name]["last"] = frame_idx
+            return stats
+
         profiling = {
             "model_key": resolved_model_key,
             "model_label": model_label,
             "device": str(device),
             "frames_total": frame_count,
             "objects_total": len(object_names),
+            "events_total": wrapped.get_event_count(),
+            "object_frame_stats": _object_frame_stats(results, object_names),
             "processing_fps": frame_count / processing_seconds,
             "auto_tune": auto_tune_info,
             "timings_s": {

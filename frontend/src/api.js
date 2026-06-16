@@ -197,6 +197,12 @@ export async function runDiagnostics() {
   return res.json();
 }
 
+export async function fetchSystemStats() {
+  const res = await fetch(`${API_BASE}/system/stats`);
+  if (!res.ok) throw new Error("Failed to fetch system stats");
+  return res.json();
+}
+
 export async function suggestFrames(sessionId, topK = 7, useDinov2 = true) {
   const params = new URLSearchParams({ top_k: topK, use_dinov2: useDinov2 });
   const res = await fetch(`${API_BASE}/frames/suggest/${sessionId}?${params.toString()}`);

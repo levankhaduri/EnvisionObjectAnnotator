@@ -1,0 +1,386 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>EnvisionObjectAnnotator — Setup Guide</title>
+  <style>
+    :root {
+      --accent: #0043ce;
+      --accent-light: #edf4ff;
+      --warn: #f1c21b;
+      --warn-bg: #fdf6dd;
+      --ok: #198038;
+      --ok-bg: #defbe6;
+      --danger: #da1e28;
+      --danger-bg: #fff1f1;
+      --text: #161616;
+      --muted: #525252;
+      --border: #e0e0e0;
+      --code-bg: #f4f4f4;
+    }
+
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      font-family: 'IBM Plex Sans', 'Segoe UI', Arial, sans-serif;
+      font-size: 15px;
+      line-height: 1.7;
+      color: var(--text);
+      background: #fff;
+      max-width: 820px;
+      margin: 0 auto;
+      padding: 48px 40px;
+    }
+
+    /* ── Typography ── */
+    h1 { font-size: 2rem; font-weight: 700; color: var(--accent); margin-bottom: 6px; }
+    h2 { font-size: 1.35rem; font-weight: 600; color: var(--text); margin: 40px 0 12px; border-bottom: 2px solid var(--border); padding-bottom: 6px; }
+    h3 { font-size: 1.05rem; font-weight: 600; margin: 24px 0 8px; color: var(--text); }
+    p  { margin-bottom: 14px; }
+    ul, ol { margin: 10px 0 14px 24px; }
+    li { margin-bottom: 6px; }
+    a  { color: var(--accent); }
+
+    .subtitle { font-size: 1rem; color: var(--muted); margin-bottom: 32px; }
+    .version  { font-size: 0.8rem; color: var(--muted); margin-top: 2px; }
+
+    /* ── Code ── */
+    code {
+      font-family: 'IBM Plex Mono', 'Consolas', monospace;
+      font-size: 0.88em;
+      background: var(--code-bg);
+      border: 1px solid var(--border);
+      border-radius: 3px;
+      padding: 1px 5px;
+    }
+
+    pre {
+      background: var(--code-bg);
+      border: 1px solid var(--border);
+      border-left: 4px solid var(--accent);
+      border-radius: 4px;
+      padding: 14px 16px;
+      overflow-x: auto;
+      margin: 10px 0 18px;
+    }
+    pre code { background: none; border: none; padding: 0; font-size: 0.875rem; }
+
+    /* ── Callout boxes ── */
+    .callout {
+      border-radius: 4px;
+      padding: 14px 16px;
+      margin: 16px 0;
+      display: flex;
+      gap: 10px;
+      align-items: flex-start;
+    }
+    .callout-icon { font-size: 1.2rem; flex-shrink: 0; margin-top: 1px; }
+    .callout-body { flex: 1; }
+    .callout.warn   { background: var(--warn-bg); border-left: 4px solid var(--warn); }
+    .callout.ok     { background: var(--ok-bg);   border-left: 4px solid var(--ok); }
+    .callout.info   { background: var(--accent-light); border-left: 4px solid var(--accent); }
+    .callout.danger { background: var(--danger-bg); border-left: 4px solid var(--danger); }
+
+    /* ── Step cards ── */
+    .steps { counter-reset: step; margin: 16px 0; }
+    .step  {
+      counter-increment: step;
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      padding: 18px 20px 14px;
+      margin-bottom: 16px;
+      position: relative;
+    }
+    .step::before {
+      content: counter(step);
+      position: absolute;
+      top: -12px; left: 16px;
+      background: var(--accent);
+      color: #fff;
+      font-weight: 700;
+      font-size: 0.85rem;
+      width: 24px; height: 24px;
+      border-radius: 50%;
+      display: flex; align-items: center; justify-content: center;
+    }
+    .step h3 { margin-top: 0; }
+
+    /* ── Prereq grid ── */
+    .prereq-grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 12px;
+      margin: 16px 0;
+    }
+    .prereq-card {
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      padding: 14px 16px;
+    }
+    .prereq-card .name { font-weight: 600; font-size: 1rem; }
+    .prereq-card .version-req { color: var(--muted); font-size: 0.85rem; }
+    .prereq-card .verify { font-family: monospace; font-size: 0.82rem; background: var(--code-bg); border: 1px solid var(--border); padding: 2px 6px; border-radius: 3px; display: inline-block; margin-top: 4px; }
+
+    /* ── Check table ── */
+    table { width: 100%; border-collapse: collapse; margin: 14px 0; font-size: 0.9rem; }
+    th { background: var(--accent-light); text-align: left; padding: 8px 12px; font-weight: 600; border-bottom: 2px solid var(--accent); }
+    td { padding: 8px 12px; border-bottom: 1px solid var(--border); vertical-align: top; }
+    tr:last-child td { border-bottom: none; }
+
+    /* ── Platform tabs (visual only) ── */
+    .platform-section { margin: 14px 0; }
+    .platform-label { display: inline-block; background: var(--accent); color: #fff; font-size: 0.78rem; font-weight: 600; padding: 2px 10px; border-radius: 3px 3px 0 0; letter-spacing: 0.04em; }
+    .platform-body { border: 1px solid var(--accent); border-radius: 0 4px 4px 4px; padding: 14px 16px; background: var(--code-bg); }
+    .platform-body pre { margin: 0; border: none; background: none; padding: 0; border-left: none; }
+
+    /* ── Troubleshoot ── */
+    details { border: 1px solid var(--border); border-radius: 4px; margin: 10px 0; }
+    summary { padding: 12px 16px; font-weight: 600; cursor: pointer; list-style: none; display: flex; align-items: center; gap: 8px; }
+    summary::before { content: "▶"; font-size: 0.7rem; color: var(--accent); transition: transform 0.2s; }
+    details[open] summary::before { transform: rotate(90deg); }
+    details > div { padding: 0 16px 14px; }
+
+    /* ── Footer ── */
+    footer { margin-top: 60px; padding-top: 20px; border-top: 1px solid var(--border); color: var(--muted); font-size: 0.82rem; }
+
+    /* ── Print ── */
+    @media print {
+      body { padding: 20px 24px; max-width: none; font-size: 13px; }
+      h2 { page-break-after: avoid; }
+      .step, .callout, .prereq-card { break-inside: avoid; }
+      details > div { display: block !important; }
+      summary::before { display: none; }
+      a { color: var(--text); text-decoration: none; }
+      a[href]::after { content: " (" attr(href) ")"; font-size: 0.78em; color: var(--muted); }
+    }
+  </style>
+</head>
+<body>
+
+<h1>EnvisionObjectAnnotator</h1>
+<p class="subtitle">Setup Guide — Installing and Starting the Application</p>
+<p class="version">EnvisionBox project &bull; <a href="https://www.envisionbox.org">envisionbox.org</a></p>
+
+<h2>Before You Begin</h2>
+
+<p>This guide walks you through installing EnvisionObjectAnnotator from scratch on a Windows, Mac, or Linux computer. No programming experience is needed — just follow each step in order.</p>
+
+<div class="callout info">
+  <span class="callout-icon">&#8505;</span>
+  <div class="callout-body"><strong>Time required:</strong> 20–30 minutes, mostly waiting for downloads. The model files are approximately 1.5 GB total.</div>
+</div>
+
+<h2>Step 1 — Install Prerequisites</h2>
+
+<p>The tool needs four software packages installed on your system. Install each one before continuing.</p>
+
+<div class="prereq-grid">
+  <div class="prereq-card">
+    <div class="name">Python</div>
+    <div class="version-req">Version 3.10 or newer</div>
+    <p>Download from <a href="https://python.org">python.org</a>.</p>
+    <strong>Important (Windows):</strong> On the first installer screen, check the box labelled <em>"Add Python to PATH"</em> before clicking Install Now.
+    <div class="verify">python --version</div>
+  </div>
+  <div class="prereq-card">
+    <div class="name">Node.js</div>
+    <div class="version-req">Version 18 LTS or newer</div>
+    <p>Download from <a href="https://nodejs.org">nodejs.org</a>. Choose the <em>LTS</em> (Long Term Support) version.</p>
+    <div class="verify">node --version</div>
+  </div>
+  <div class="prereq-card">
+    <div class="name">Git</div>
+    <div class="version-req">Any recent version</div>
+    <p>Download from <a href="https://git-scm.com">git-scm.com</a>. Use the default options during installation.</p>
+    <div class="verify">git --version</div>
+  </div>
+  <div class="prereq-card">
+    <div class="name">FFmpeg</div>
+    <div class="version-req">Any recent version</div>
+    <p>Download from <a href="https://ffmpeg.org/download.html">ffmpeg.org</a>. After installing on Windows, <a href="https://www.wikihow.com/Install-FFmpeg-on-Windows">add it to your system PATH</a>.</p>
+    <div class="verify">ffmpeg -version</div>
+  </div>
+</div>
+
+<h3>Verify everything is installed</h3>
+<p>Open a terminal (see Step 2 for how) and run each command. Each should print a version number, not an error.</p>
+<pre><code>python --version
+node --version
+git --version
+ffmpeg -version</code></pre>
+
+<div class="callout warn">
+  <span class="callout-icon">&#9888;</span>
+  <div class="callout-body">If any command says "not found" or "not recognized", that program is not installed correctly. Re-install it and make sure to add it to PATH when prompted.</div>
+</div>
+
+<h2>Step 2 — Open a Terminal</h2>
+
+<div class="platform-section">
+  <div class="platform-label">Windows</div>
+  <div class="platform-body">
+    <p>Open the <strong>Start menu</strong>, search for <strong>PowerShell</strong>, and open it.</p>
+    <p>Then run this one-time command to allow setup scripts to run (you only need to do this once per computer):</p>
+    <pre><code>Set-ExecutionPolicy -ExecutionPolicy RemoteSigned -Scope CurrentUser</code></pre>
+    <p>When prompted, type <code>Y</code> and press Enter.</p>
+  </div>
+</div>
+
+<div class="platform-section" style="margin-top:12px">
+  <div class="platform-label">Mac / Linux</div>
+  <div class="platform-body">
+    <p>Open the <strong>Terminal</strong> application from your Applications folder or app launcher.</p>
+  </div>
+</div>
+
+<h2>Step 3 — Download the Tool</h2>
+
+<p>In your terminal, run:</p>
+<pre><code>git clone https://github.com/levankhaduri/EnvisionObjectAnnotator.git
+cd EnvisionObjectAnnotator</code></pre>
+
+<p>This creates a folder called <code>EnvisionObjectAnnotator</code> containing all the tool's files.</p>
+
+<h2>Step 4 — Run the Setup Script</h2>
+
+<div class="callout warn">
+  <span class="callout-icon">&#9888;</span>
+  <div class="callout-body"><strong>Leave the terminal open and do not close it.</strong> The setup downloads ~1.5 GB of AI model files and installs all dependencies. This can take 10–20 minutes. Wait until you see <em>"Setup Complete!"</em> before continuing.</div>
+</div>
+
+<div class="platform-section">
+  <div class="platform-label">Windows</div>
+  <div class="platform-body"><pre><code>.\setup.ps1</code></pre></div>
+</div>
+
+<div class="platform-section" style="margin-top:12px">
+  <div class="platform-label">Mac / Linux</div>
+  <div class="platform-body"><pre><code>chmod +x setup.sh &amp;&amp; ./setup.sh</code></pre></div>
+</div>
+
+<p>The setup script will:</p>
+<ul>
+  <li>Create a Python virtual environment</li>
+  <li>Install all Python packages</li>
+  <li>Download SAM2 and its model checkpoints (~1.4 GB)</li>
+  <li>Install all frontend packages</li>
+  <li>Verify your GPU setup (if available)</li>
+</ul>
+
+<h2>Step 5 — Start the Application</h2>
+
+<div class="platform-section">
+  <div class="platform-label">Windows</div>
+  <div class="platform-body"><pre><code>.\run.ps1</code></pre></div>
+</div>
+
+<div class="platform-section" style="margin-top:12px">
+  <div class="platform-label">Mac / Linux</div>
+  <div class="platform-body"><pre><code>./run.sh</code></pre></div>
+</div>
+
+<p>Two background processes start: the <strong>backend API</strong> (port 8000) and the <strong>frontend</strong> (port 5173). Your browser should open automatically. If it does not, open:</p>
+
+<pre><code>http://localhost:5173</code></pre>
+
+<div class="callout ok">
+  <span class="callout-icon">&#10003;</span>
+  <div class="callout-body">You should see the EnvisionObjectAnnotator home page with a green "Backend connected" indicator. The tool is ready to use.</div>
+</div>
+
+<h2>Stopping the Application</h2>
+
+<p>To stop the servers:</p>
+<ul>
+  <li><strong>Windows:</strong> Close the two PowerShell windows that opened (one for the backend, one for the frontend).</li>
+  <li><strong>Mac/Linux:</strong> Press <code>Ctrl+C</code> in the terminal where you ran <code>./run.sh</code>.</li>
+</ul>
+
+<h2>Subsequent Sessions</h2>
+
+<p>After the first-time setup, you only need to run the start script each time you want to use the tool:</p>
+<pre><code># Windows
+.\run.ps1
+
+# Mac/Linux
+./run.sh</code></pre>
+
+<p>You do <strong>not</strong> need to run <code>setup.ps1</code> / <code>setup.sh</code> again unless you reinstall or update the tool.</p>
+
+<h2>Troubleshooting</h2>
+
+<details>
+  <summary>The browser shows "Cannot connect to backend" or a blank page</summary>
+  <div>
+    <p>The backend server may not have started yet. Wait 10–15 seconds and refresh the page. If the problem persists:</p>
+    <ul>
+      <li>Check that port 8000 is not used by another program.</li>
+      <li>On Windows, look for the PowerShell window titled "backend" — it may show an error message.</li>
+      <li>Try restarting: close all related windows and run <code>.\run.ps1</code> again.</li>
+    </ul>
+  </div>
+</details>
+
+<details>
+  <summary>Setup fails with "pip: command not found" or Python errors</summary>
+  <div>
+    <p>Python was not added to PATH during installation. Re-install Python from <a href="https://python.org">python.org</a> and on the first screen tick the <em>"Add Python to PATH"</em> checkbox before clicking Install Now. Then close and reopen the terminal and run <code>.\setup.ps1</code> again.</p>
+  </div>
+</details>
+
+<details>
+  <summary>Setup fails at the SAM2 download step (network error or timeout)</summary>
+  <div>
+    <p>The SAM2 model files are hosted by Meta and may be slow on some networks. Try:</p>
+    <ul>
+      <li>Running <code>.\setup.ps1</code> again — it will resume from where it stopped.</li>
+      <li>Switching to a faster or less restricted network connection.</li>
+      <li>Running during off-peak hours if you are on a shared network.</li>
+    </ul>
+  </div>
+</details>
+
+<details>
+  <summary>"ffmpeg: command not found" during video extraction</summary>
+  <div>
+    <p>FFmpeg is installed but not on PATH. On Windows, follow the instructions at <a href="https://www.wikihow.com/Install-FFmpeg-on-Windows">wikihow.com/Install-FFmpeg-on-Windows</a> to add FFmpeg to your system PATH. Then close and reopen PowerShell and try again.</p>
+  </div>
+</details>
+
+<details>
+  <summary>Processing is very slow — no GPU detected</summary>
+  <div>
+    <p>The tool works on CPU but is significantly slower. GPU acceleration requires an NVIDIA GPU with CUDA support. The home page shows a GPU status indicator — if it shows "CPU only", processing a 30-second video may take several minutes instead of seconds. This is normal and the results will be the same quality.</p>
+    <p>If you have an NVIDIA GPU but it is not detected, check that you have the latest NVIDIA drivers installed.</p>
+  </div>
+</details>
+
+<details>
+  <summary>Windows: "running scripts is disabled" error</summary>
+  <div>
+    <p>You need to allow script execution. In PowerShell, run:</p>
+    <pre><code>Set-ExecutionPolicy -ExecutionPolicy RemoteSigned -Scope CurrentUser</code></pre>
+    <p>Type <code>Y</code> when prompted, then try running <code>.\setup.ps1</code> again.</p>
+  </div>
+</details>
+
+<details>
+  <summary>Linux / HPC: running inside a Singularity container</summary>
+  <div>
+    <p>The tool can be deployed in a Singularity container. The SAM2 model configuration is loaded using relative paths, so the tool does not require any path adjustments inside the container. Make sure:</p>
+    <ul>
+      <li>The container includes Python 3.10+, Node.js 18+, FFmpeg, and CUDA libraries (if GPU is available).</li>
+      <li>The <code>EnvisionObjectAnnotator</code> directory is mounted inside the container.</li>
+      <li>Run the backend with <code>uvicorn app.main:app --host 0.0.0.0 --port 8000</code> from within <code>backend/</code>.</li>
+    </ul>
+  </div>
+</details>
+
+<footer>
+  <p>EnvisionObjectAnnotator &bull; EnvisionBox Project &bull; <a href="https://www.envisionbox.org">envisionbox.org</a></p>
+  <p>For issues and questions: <a href="https://github.com/levankhaduri/EnvisionObjectAnnotator/issues">github.com/levankhaduri/EnvisionObjectAnnotator/issues</a></p>
+</footer>
+
+</body>
+</html>

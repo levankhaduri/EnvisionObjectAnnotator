@@ -217,9 +217,10 @@ def get_video_fps(video_path):
 class EnhancedOverlapDetector:
     """Enhanced overlap detector that properly handles inclusion and complex overlaps."""
 
-    def __init__(self, overlap_threshold=0.1):
+    def __init__(self, overlap_threshold=0.1, overlap_mode="both"):
         self.overlap_threshold = overlap_threshold
         self.inclusion_threshold = 0.1
+        self.overlap_mode = overlap_mode  # "both" | "pixel_only" | "spatial_only"
 
     def calculate_detailed_overlap(self, mask1, mask2):
         """Enhanced overlap detection with both pixel overlap and spatial containment."""
@@ -257,6 +258,26 @@ class EnhancedOverlapDetector:
 
         spatial_relationship = False
         containment_type = None
+
+        # Skip expensive spatial check when mode only wants pixel overlap
+        if self.overlap_mode == "pixel_only":
+            has_meaningful_pixel_overlap = intersection_area > 0 and max_overlap >= self.overlap_threshold
+            if not has_meaningful_pixel_overlap:
+                return None
+            return {
+                "intersection_area": intersection_area,
+                "overlap_pct_1": overlap_pct_1,
+                "overlap_pct_2": overlap_pct_2,
+                "min_overlap_pct": min(overlap_pct_1, overlap_pct_2),
+                "max_overlap_pct": max_overlap,
+                "spatial_relationship": False,
+                "containment_type": None,
+                "has_meaningful_pixel_overlap": True,
+                "has_spatial_relationship": False,
+                "relationship_type": "pixel_overlap",
+                "meets_threshold": True,
+                "meets_continuation_threshold": True,
+            }
 
         try:
             contours1, _ = cv2.findContours(mask1_bool.astype(np.uint8), cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
@@ -304,6 +325,8 @@ class EnhancedOverlapDetector:
         has_meaningful_pixel_overlap = intersection_area > 0 and max_overlap >= self.overlap_threshold
         has_spatial_relationship = spatial_relationship
 
+        if self.overlap_mode == "spatial_only" and not has_spatial_relationship:
+            return None
         if not has_meaningful_pixel_overlap and not has_spatial_relationship:
             return None
 
@@ -338,11 +361,11 @@ class EnhancedOverlapDetector:
 class ImprovedTargetOverlapTracker:
     """Improved overlap tracker with better inclusion detection and annotations."""
 
-    def __init__(self, overlap_threshold=0.1):
+    def __init__(self, overlap_threshold=0.1, overlap_mode="both"):
         self.overlap_threshold = overlap_threshold
         self.overlap_events = {}
         self.target_objects = {}
-        self.detector = EnhancedOverlapDetector(overlap_threshold)
+        self.detector = EnhancedOverlapDetector(overlap_threshold, overlap_mode)
 
     def register_target(self, obj_id, obj_name):
         """Register target objects."""
@@ -358,10 +381,11 @@ class ImprovedTargetOverlapTracker:
         summary = {}
         for target_id, events in self.overlap_events.items():
             target_name = self.target_objects[target_id]
+            closed = [e for e in events if e.get("end_frame") is not None]
             summary[target_name] = {
-                "total_events": len(events),
-                "events": events,
-                "total_overlap_frames": sum(event["duration_frames"] for event in events),
+                "total_events": len(closed),
+                "events": closed,
+                "total_overlap_frames": sum(e["duration_frames"] for e in closed),
             }
         return summary
 
@@ -564,6 +588,7 @@ class UltraOptimizedProcessor:
         disk_store_enabled=True,
         enable_bidirectional=False,
         enhance_target=False,
+        overlap_mode="both",
     ):
         self.predictor = predictor
         self.full_video_dir = video_dir
@@ -604,7 +629,7 @@ class UltraOptimizedProcessor:
         self.roi_info = None
         self._prepared = False
 
-        self.overlap_tracker = ImprovedTargetOverlapTracker(overlap_threshold)
+        self.overlap_tracker = ImprovedTargetOverlapTracker(overlap_threshold, overlap_mode)
         self.partial_results = {}
 
         self.full_frame_names = sorted(
@@ -1559,6 +1584,31 @@ class UltraOptimizedProcessor:
                                 self._log("backward add prompts failed: obj_id=%s error=%s" % (obj_id, exc))
                             continue
 
+                    # Re-add multi-frame annotations for frames earlier than start_frame
+                    for mf_idx, (mf_pts, mf_lbs, _) in (multiframe_data or {}).items():
+                        if not (range_start <= mf_idx < start_frame):
+                            continue
+                        for obj_id in mf_pts:
+                            try:
+                                pts = np.array(mf_pts[obj_id], dtype=np.float32)
+                                lbs = np.array(mf_lbs[obj_id], dtype=np.int32)
+                                self.predictor.add_new_points_or_box(
+                                    inference_state=inference_state,
+                                    frame_idx=mf_idx,
+                                    obj_id=obj_id,
+                                    points=pts,
+                                    labels=lbs,
+                                )
+                                del pts, lbs
+                                ultra_cleanup_memory()
+                            except Exception as exc:
+                                if debug:
+                                    self._log(
+                                        "backward multiframe add failed: mf_idx=%s obj_id=%s error=%s"
+                                        % (mf_idx, obj_id, exc)
+                                    )
+                                continue
+
                     # Propagate backward
                     max_track_backward = start_frame - range_start
                     for out_frame_idx, out_obj_ids, out_mask_logits in self.predictor.propagate_in_video(
@@ -1799,6 +1849,31 @@ class UltraOptimizedProcessor:
                                                 % (obj_id, exc)
                                             )
                                         continue
+                                # Add multi-frame annotations within this first backward chunk
+                                for mf_idx, (mf_pts, mf_lbs, _) in (multiframe_data or {}).items():
+                                    if not (chunk_start_bwd <= mf_idx < chunk_end_bwd):
+                                        continue
+                                    local_mf_idx = mf_idx - chunk_start_bwd
+                                    for obj_id in mf_pts:
+                                        try:
+                                            pts = np.array(mf_pts[obj_id], dtype=np.float32)
+                                            lbs = np.array(mf_lbs[obj_id], dtype=np.int32)
+                                            self.predictor.add_new_points_or_box(
+                                                inference_state=chunk_inference_state,
+                                                frame_idx=local_mf_idx,
+                                                obj_id=obj_id,
+                                                points=pts,
+                                                labels=lbs,
+                                            )
+                                            del pts, lbs
+                                            ultra_cleanup_memory()
+                                        except Exception as exc:
+                                            if debug:
+                                                self._log(
+                                                    "backward chunk multiframe add failed: mf_idx=%s obj_id=%s error=%s"
+                                                    % (mf_idx, obj_id, exc)
+                                                )
+                                            continue
                             else:
                                 # Subsequent chunks: seed with masks from previous chunk
                                 for obj_id, mask in (seed_masks_bwd or {}).items():
@@ -1818,6 +1893,31 @@ class UltraOptimizedProcessor:
                                                 % (obj_id, exc)
                                             )
                                         continue
+                                # Also add multiframe annotations within this subsequent chunk
+                                for mf_idx, (mf_pts, mf_lbs, _) in (multiframe_data or {}).items():
+                                    if not (chunk_start_bwd <= mf_idx < chunk_end_bwd):
+                                        continue
+                                    local_mf_idx = mf_idx - chunk_start_bwd
+                                    for obj_id in mf_pts:
+                                        try:
+                                            pts = np.array(mf_pts[obj_id], dtype=np.float32)
+                                            lbs = np.array(mf_lbs[obj_id], dtype=np.int32)
+                                            self.predictor.add_new_points_or_box(
+                                                inference_state=chunk_inference_state,
+                                                frame_idx=local_mf_idx,
+                                                obj_id=obj_id,
+                                                points=pts,
+                                                labels=lbs,
+                                            )
+                                            del pts, lbs
+                                            ultra_cleanup_memory()
+                                        except Exception as exc:
+                                            if debug:
+                                                self._log(
+                                                    "backward chunk multiframe add failed: mf_idx=%s obj_id=%s error=%s"
+                                                    % (mf_idx, obj_id, exc)
+                                                )
+                                            continue
 
                             local_max_track_bwd = local_seed_bwd
                             last_processed_bwd, seed_masks_bwd = _process_frames(
@@ -2272,13 +2372,17 @@ class UltraOptimizedProcessor:
 
         all_time_points = set()
         for target_name, target_data in summary.items():
-            for event in sorted(target_data["events"], key=lambda e: e["start_frame"]):
+            for event in sorted(target_data["events"], key=lambda e: e["start_frame"] or 0):
+                if event.get("start_frame") is None or event.get("end_frame") is None:
+                    continue
                 start_frame_corrected = event["start_frame"] + frame_offset
                 end_frame_corrected = event["end_frame"] + frame_offset
 
                 start_time = start_frame_corrected / fps
                 end_time = end_frame_corrected / fps
 
+                if int(end_time * 1000) <= int(start_time * 1000):
+                    continue
                 all_time_points.add(start_time)
                 all_time_points.add(end_time)
 
@@ -2297,7 +2401,9 @@ class UltraOptimizedProcessor:
             tier_id = target_name.upper().replace(" ", "_").replace("-", "_")
             tier_content += f'    <TIER DEFAULT_LOCALE="en" LINGUISTIC_TYPE_REF="default" TIER_ID="{tier_id}_LOOKING_AT">\n'
 
-            for event in sorted(target_data["events"], key=lambda e: e["start_frame"]):
+            for event in sorted(target_data["events"], key=lambda e: e["start_frame"] or 0):
+                if event.get("start_frame") is None or event.get("end_frame") is None:
+                    continue
                 start_frame_corrected = event["start_frame"] + frame_offset
                 end_frame_corrected = event["end_frame"] + frame_offset
 
@@ -2305,6 +2411,9 @@ class UltraOptimizedProcessor:
                 end_time = end_frame_corrected / fps
                 start_ms = int(start_time * 1000)
                 end_ms = int(end_time * 1000)
+
+                if end_ms <= start_ms:
+                    continue
 
                 start_slot = time_slot_refs[start_ms]
                 end_slot = time_slot_refs[end_ms]

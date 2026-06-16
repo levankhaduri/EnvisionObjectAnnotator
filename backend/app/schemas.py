@@ -46,6 +46,7 @@ class ConfigUpdate(BaseModel):
     process_end_frame: Optional[int] = None
     enable_bidirectional: bool = True
     enhance_target: bool = False
+    overlap_mode: Optional[str] = None
 
 
 class Point(BaseModel):
