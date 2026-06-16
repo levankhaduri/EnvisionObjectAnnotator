@@ -40,6 +40,7 @@ import {
   WarningAlt,
   Hourglass,
   Analytics,
+  ViewFilled,
 } from "@carbon/icons-react";
 
 export default function ResultsPage() {
@@ -483,6 +484,29 @@ export default function ResultsPage() {
                       </div>
                     </div>
                   </AccordionItem>
+
+                  {profiling?.object_frame_stats && Object.keys(profiling.object_frame_stats).length > 0 && (
+                    <AccordionItem title={<span style={{ display: "flex", alignItems: "center", gap: "0.5rem" }}><ViewFilled size={16} /> Object Tracking</span>}>
+                      <StructuredListWrapper>
+                        <StructuredListHead>
+                          <StructuredListRow head>
+                            <StructuredListCell head>Object</StructuredListCell>
+                            <StructuredListCell head>Frames</StructuredListCell>
+                            <StructuredListCell head>Range</StructuredListCell>
+                          </StructuredListRow>
+                        </StructuredListHead>
+                        <StructuredListBody>
+                          {Object.entries(profiling.object_frame_stats).map(([name, s]) => (
+                            <StructuredListRow key={name}>
+                              <StructuredListCell>{name}</StructuredListCell>
+                              <StructuredListCell>{s.frames}</StructuredListCell>
+                              <StructuredListCell>{s.first} → {s.last}</StructuredListCell>
+                            </StructuredListRow>
+                          ))}
+                        </StructuredListBody>
+                      </StructuredListWrapper>
+                    </AccordionItem>
+                  )}
 
                   <AccordionItem title={<span style={{ display: "flex", alignItems: "center", gap: "0.5rem" }}><Laptop size={16} /> Hardware</span>}>
                     <div style={{ display: "flex", flexDirection: "column", gap: "0.5rem", fontSize: "0.875rem" }}>

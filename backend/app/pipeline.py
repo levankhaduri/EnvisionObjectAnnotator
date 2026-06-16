@@ -217,9 +217,10 @@ def get_video_fps(video_path):
 class EnhancedOverlapDetector:
     """Enhanced overlap detector that properly handles inclusion and complex overlaps."""
 
-    def __init__(self, overlap_threshold=0.1):
+    def __init__(self, overlap_threshold=0.1, overlap_mode="both"):
         self.overlap_threshold = overlap_threshold
         self.inclusion_threshold = 0.1
+        self.overlap_mode = overlap_mode  # "both" | "pixel_only" | "spatial_only"
 
     def calculate_detailed_overlap(self, mask1, mask2):
         """Enhanced overlap detection with both pixel overlap and spatial containment."""
@@ -257,6 +258,26 @@ class EnhancedOverlapDetector:
 
         spatial_relationship = False
         containment_type = None
+
+        # Skip expensive spatial check when mode only wants pixel overlap
+        if self.overlap_mode == "pixel_only":
+            has_meaningful_pixel_overlap = intersection_area > 0 and max_overlap >= self.overlap_threshold
+            if not has_meaningful_pixel_overlap:
+                return None
+            return {
+                "intersection_area": intersection_area,
+                "overlap_pct_1": overlap_pct_1,
+                "overlap_pct_2": overlap_pct_2,
+                "min_overlap_pct": min(overlap_pct_1, overlap_pct_2),
+                "max_overlap_pct": max_overlap,
+                "spatial_relationship": False,
+                "containment_type": None,
+                "has_meaningful_pixel_overlap": True,
+                "has_spatial_relationship": False,
+                "relationship_type": "pixel_overlap",
+                "meets_threshold": True,
+                "meets_continuation_threshold": True,
+            }
 
         try:
             contours1, _ = cv2.findContours(mask1_bool.astype(np.uint8), cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
@@ -304,6 +325,8 @@ class EnhancedOverlapDetector:
         has_meaningful_pixel_overlap = intersection_area > 0 and max_overlap >= self.overlap_threshold
         has_spatial_relationship = spatial_relationship
 
+        if self.overlap_mode == "spatial_only" and not has_spatial_relationship:
+            return None
         if not has_meaningful_pixel_overlap and not has_spatial_relationship:
             return None
 
@@ -338,11 +361,11 @@ class EnhancedOverlapDetector:
 class ImprovedTargetOverlapTracker:
     """Improved overlap tracker with better inclusion detection and annotations."""
 
-    def __init__(self, overlap_threshold=0.1):
+    def __init__(self, overlap_threshold=0.1, overlap_mode="both"):
         self.overlap_threshold = overlap_threshold
         self.overlap_events = {}
         self.target_objects = {}
-        self.detector = EnhancedOverlapDetector(overlap_threshold)
+        self.detector = EnhancedOverlapDetector(overlap_threshold, overlap_mode)
 
     def register_target(self, obj_id, obj_name):
         """Register target objects."""
@@ -565,6 +588,7 @@ class UltraOptimizedProcessor:
         disk_store_enabled=True,
         enable_bidirectional=False,
         enhance_target=False,
+        overlap_mode="both",
     ):
         self.predictor = predictor
         self.full_video_dir = video_dir
@@ -605,7 +629,7 @@ class UltraOptimizedProcessor:
         self.roi_info = None
         self._prepared = False
 
-        self.overlap_tracker = ImprovedTargetOverlapTracker(overlap_threshold)
+        self.overlap_tracker = ImprovedTargetOverlapTracker(overlap_threshold, overlap_mode)
         self.partial_results = {}
 
         self.full_frame_names = sorted(
