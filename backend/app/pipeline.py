@@ -1560,6 +1560,31 @@ class UltraOptimizedProcessor:
                                 self._log("backward add prompts failed: obj_id=%s error=%s" % (obj_id, exc))
                             continue
 
+                    # Re-add multi-frame annotations for frames earlier than start_frame
+                    for mf_idx, (mf_pts, mf_lbs, _) in (multiframe_data or {}).items():
+                        if not (range_start <= mf_idx < start_frame):
+                            continue
+                        for obj_id in mf_pts:
+                            try:
+                                pts = np.array(mf_pts[obj_id], dtype=np.float32)
+                                lbs = np.array(mf_lbs[obj_id], dtype=np.int32)
+                                self.predictor.add_new_points_or_box(
+                                    inference_state=inference_state,
+                                    frame_idx=mf_idx,
+                                    obj_id=obj_id,
+                                    points=pts,
+                                    labels=lbs,
+                                )
+                                del pts, lbs
+                                ultra_cleanup_memory()
+                            except Exception as exc:
+                                if debug:
+                                    self._log(
+                                        "backward multiframe add failed: mf_idx=%s obj_id=%s error=%s"
+                                        % (mf_idx, obj_id, exc)
+                                    )
+                                continue
+
                     # Propagate backward
                     max_track_backward = start_frame - range_start
                     for out_frame_idx, out_obj_ids, out_mask_logits in self.predictor.propagate_in_video(
@@ -1800,6 +1825,31 @@ class UltraOptimizedProcessor:
                                                 % (obj_id, exc)
                                             )
                                         continue
+                                # Add multi-frame annotations within this first backward chunk
+                                for mf_idx, (mf_pts, mf_lbs, _) in (multiframe_data or {}).items():
+                                    if not (chunk_start_bwd <= mf_idx < chunk_end_bwd):
+                                        continue
+                                    local_mf_idx = mf_idx - chunk_start_bwd
+                                    for obj_id in mf_pts:
+                                        try:
+                                            pts = np.array(mf_pts[obj_id], dtype=np.float32)
+                                            lbs = np.array(mf_lbs[obj_id], dtype=np.int32)
+                                            self.predictor.add_new_points_or_box(
+                                                inference_state=chunk_inference_state,
+                                                frame_idx=local_mf_idx,
+                                                obj_id=obj_id,
+                                                points=pts,
+                                                labels=lbs,
+                                            )
+                                            del pts, lbs
+                                            ultra_cleanup_memory()
+                                        except Exception as exc:
+                                            if debug:
+                                                self._log(
+                                                    "backward chunk multiframe add failed: mf_idx=%s obj_id=%s error=%s"
+                                                    % (mf_idx, obj_id, exc)
+                                                )
+                                            continue
                             else:
                                 # Subsequent chunks: seed with masks from previous chunk
                                 for obj_id, mask in (seed_masks_bwd or {}).items():
@@ -1819,6 +1869,31 @@ class UltraOptimizedProcessor:
                                                 % (obj_id, exc)
                                             )
                                         continue
+                                # Also add multiframe annotations within this subsequent chunk
+                                for mf_idx, (mf_pts, mf_lbs, _) in (multiframe_data or {}).items():
+                                    if not (chunk_start_bwd <= mf_idx < chunk_end_bwd):
+                                        continue
+                                    local_mf_idx = mf_idx - chunk_start_bwd
+                                    for obj_id in mf_pts:
+                                        try:
+                                            pts = np.array(mf_pts[obj_id], dtype=np.float32)
+                                            lbs = np.array(mf_lbs[obj_id], dtype=np.int32)
+                                            self.predictor.add_new_points_or_box(
+                                                inference_state=chunk_inference_state,
+                                                frame_idx=local_mf_idx,
+                                                obj_id=obj_id,
+                                                points=pts,
+                                                labels=lbs,
+                                            )
+                                            del pts, lbs
+                                            ultra_cleanup_memory()
+                                        except Exception as exc:
+                                            if debug:
+                                                self._log(
+                                                    "backward chunk multiframe add failed: mf_idx=%s obj_id=%s error=%s"
+                                                    % (mf_idx, obj_id, exc)
+                                                )
+                                            continue
 
                             local_max_track_bwd = local_seed_bwd
                             last_processed_bwd, seed_masks_bwd = _process_frames(
