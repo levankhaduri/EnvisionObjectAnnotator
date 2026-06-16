@@ -1,0 +1,627 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>EnvisionObjectAnnotator — User Guide</title>
+  <style>
+    :root {
+      --accent: #0043ce;
+      --accent-light: #edf4ff;
+      --accent2: #6929c4;
+      --warn: #f1c21b;
+      --warn-bg: #fdf6dd;
+      --ok: #198038;
+      --ok-bg: #defbe6;
+      --danger: #da1e28;
+      --danger-bg: #fff1f1;
+      --text: #161616;
+      --muted: #525252;
+      --border: #e0e0e0;
+      --code-bg: #f4f4f4;
+    }
+
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      font-family: 'IBM Plex Sans', 'Segoe UI', Arial, sans-serif;
+      font-size: 15px;
+      line-height: 1.7;
+      color: var(--text);
+      background: #fff;
+      max-width: 840px;
+      margin: 0 auto;
+      padding: 48px 40px;
+    }
+
+    h1 { font-size: 2rem; font-weight: 700; color: var(--accent); margin-bottom: 6px; }
+    h2 { font-size: 1.35rem; font-weight: 600; color: var(--text); margin: 44px 0 12px; border-bottom: 2px solid var(--border); padding-bottom: 6px; }
+    h3 { font-size: 1.05rem; font-weight: 600; margin: 22px 0 8px; color: var(--text); }
+    p  { margin-bottom: 14px; }
+    ul, ol { margin: 10px 0 14px 24px; }
+    li { margin-bottom: 6px; }
+    a  { color: var(--accent); }
+
+    .subtitle { font-size: 1rem; color: var(--muted); margin-bottom: 10px; }
+    .version  { font-size: 0.8rem; color: var(--muted); margin-bottom: 36px; }
+
+    code {
+      font-family: 'IBM Plex Mono', 'Consolas', monospace;
+      font-size: 0.88em;
+      background: var(--code-bg);
+      border: 1px solid var(--border);
+      border-radius: 3px;
+      padding: 1px 5px;
+    }
+
+    pre {
+      background: var(--code-bg);
+      border: 1px solid var(--border);
+      border-left: 4px solid var(--accent);
+      border-radius: 4px;
+      padding: 14px 16px;
+      overflow-x: auto;
+      margin: 10px 0 18px;
+      font-family: 'IBM Plex Mono', 'Consolas', monospace;
+      font-size: 0.875rem;
+    }
+
+    /* ── Callouts ── */
+    .callout {
+      border-radius: 4px;
+      padding: 13px 16px;
+      margin: 16px 0;
+      display: flex;
+      gap: 10px;
+      align-items: flex-start;
+    }
+    .callout-icon { font-size: 1.1rem; flex-shrink: 0; margin-top: 2px; }
+    .callout-body { flex: 1; }
+    .callout.warn   { background: var(--warn-bg); border-left: 4px solid var(--warn); }
+    .callout.ok     { background: var(--ok-bg);   border-left: 4px solid var(--ok); }
+    .callout.info   { background: var(--accent-light); border-left: 4px solid var(--accent); }
+    .callout.tip    { background: #f6f2ff; border-left: 4px solid var(--accent2); }
+
+    /* ── Workflow steps ── */
+    .workflow {
+      display: flex;
+      flex-direction: column;
+      gap: 0;
+      margin: 20px 0 28px;
+      counter-reset: wf-step;
+      position: relative;
+    }
+    .workflow::before {
+      content: '';
+      position: absolute;
+      left: 19px;
+      top: 28px;
+      bottom: 28px;
+      width: 2px;
+      background: var(--border);
+    }
+    .wf-step {
+      counter-increment: wf-step;
+      display: flex;
+      gap: 16px;
+      align-items: flex-start;
+      margin-bottom: 20px;
+      position: relative;
+    }
+    .wf-num {
+      width: 38px; height: 38px;
+      border-radius: 50%;
+      background: var(--accent);
+      color: #fff;
+      font-weight: 700;
+      font-size: 1rem;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      flex-shrink: 0;
+      z-index: 1;
+    }
+    .wf-content { padding-top: 6px; flex: 1; }
+    .wf-content h3 { margin-top: 0; }
+
+    /* ── Shortcut table ── */
+    table { width: 100%; border-collapse: collapse; margin: 14px 0 20px; font-size: 0.9rem; }
+    th { background: var(--accent-light); text-align: left; padding: 8px 12px; font-weight: 600; border-bottom: 2px solid var(--accent); }
+    td { padding: 8px 12px; border-bottom: 1px solid var(--border); vertical-align: top; }
+    tr:last-child td { border-bottom: none; }
+    kbd {
+      display: inline-block;
+      background: #f4f4f4;
+      border: 1px solid #c0c0c0;
+      border-bottom-width: 2px;
+      border-radius: 3px;
+      padding: 1px 7px;
+      font-family: monospace;
+      font-size: 0.85em;
+    }
+
+    /* ── Output cards ── */
+    .output-grid {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 14px;
+      margin: 16px 0 24px;
+    }
+    .output-card {
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      padding: 16px;
+    }
+    .output-card .icon  { font-size: 1.8rem; margin-bottom: 8px; }
+    .output-card .name  { font-weight: 600; font-size: 1rem; margin-bottom: 4px; }
+    .output-card .ext   { font-family: monospace; font-size: 0.8rem; color: var(--muted); background: var(--code-bg); padding: 1px 5px; border-radius: 3px; }
+    .output-card p      { font-size: 0.88rem; color: var(--muted); margin-top: 8px; margin-bottom: 0; }
+
+    /* ── Image container ── */
+    .figure {
+      margin: 20px 0;
+      text-align: center;
+    }
+    .figure img {
+      max-width: 100%;
+      border: 1px solid var(--border);
+      border-radius: 4px;
+    }
+    .figure figcaption {
+      font-size: 0.82rem;
+      color: var(--muted);
+      margin-top: 6px;
+    }
+    .figure-row {
+      display: flex;
+      gap: 12px;
+      justify-content: center;
+      flex-wrap: wrap;
+    }
+    .figure-row img {
+      flex: 1 1 45%;
+      min-width: 220px;
+      max-width: 49%;
+      border: 1px solid var(--border);
+      border-radius: 4px;
+    }
+
+    /* ── Detail accordion ── */
+    details { border: 1px solid var(--border); border-radius: 4px; margin: 10px 0; }
+    summary { padding: 12px 16px; font-weight: 600; cursor: pointer; list-style: none; display: flex; align-items: center; gap: 8px; }
+    summary::before { content: "▶"; font-size: 0.7rem; color: var(--accent); }
+    details[open] summary::before { transform: rotate(90deg); }
+    details > div { padding: 0 16px 14px; }
+
+    /* ── Model comparison ── */
+    .model-grid {
+      display: grid;
+      grid-template-columns: repeat(4, 1fr);
+      gap: 10px;
+      margin: 14px 0;
+    }
+    .model-card {
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      padding: 12px;
+      text-align: center;
+    }
+    .model-card .mname { font-weight: 600; font-size: 0.9rem; }
+    .model-card .msize { font-size: 0.8rem; color: var(--muted); }
+    .model-card .mbar  { height: 5px; background: var(--border); border-radius: 3px; margin: 8px 0; }
+    .model-card .mbar-fill { height: 100%; background: var(--accent); border-radius: 3px; }
+    .model-card .mlabel { font-size: 0.78rem; color: var(--muted); }
+
+    /* ── footer ── */
+    footer { margin-top: 60px; padding-top: 20px; border-top: 1px solid var(--border); color: var(--muted); font-size: 0.82rem; }
+
+    @media print {
+      body { padding: 20px 24px; max-width: none; font-size: 13px; }
+      h2 { page-break-after: avoid; }
+      .wf-step, .callout, .output-card { break-inside: avoid; }
+      .workflow::before { display: none; }
+      details > div { display: block !important; }
+      summary::before { display: none; }
+      a { color: var(--text); text-decoration: none; }
+      a[href]::after { content: " (" attr(href) ")"; font-size: 0.78em; color: var(--muted); }
+    }
+  </style>
+</head>
+<body>
+
+<h1>EnvisionObjectAnnotator</h1>
+<p class="subtitle">User Guide — Annotating Videos and Understanding Results</p>
+<p class="version">EnvisionBox project &bull; <a href="https://www.envisionbox.org">envisionbox.org</a></p>
+
+<!-- ══════════════════════════════════════════════ -->
+<h2>What This Tool Does</h2>
+
+<p>EnvisionObjectAnnotator (EOA) uses AI to automatically track objects across a video and detect when a <em>target</em> object overlaps with others. The tool was developed for infant research — specifically to detect when an infant (wearing a head-mounted camera) looks at specific objects — but it can be used for any scenario where one object's overlap with others needs to be measured.</p>
+
+<p>You mark objects in a single reference frame. The AI model (SAM2) then propagates those masks through the entire video, detects overlap events, and produces three output files ready for further analysis.</p>
+
+<div class="figure">
+  <div class="figure-row">
+    <img src="screenshots/03_annotation_frame_select.png" alt="Selecting a reference frame in the Annotate step">
+    <img src="screenshots/09_results.png" alt="Results page showing detected overlap events">
+  </div>
+  <figcaption>Figure 1 — From reference frame (left) to results (right): SAM2 propagates object masks through every video frame and detects overlap events.</figcaption>
+</div>
+
+<!-- ══════════════════════════════════════════════ -->
+<h2>Overview: The Workflow</h2>
+
+<div class="workflow">
+  <div class="wf-step">
+    <div class="wf-num">1</div>
+    <div class="wf-content">
+      <h3>Upload &amp; configure</h3>
+      <p>Upload your video, set the frame extraction rate, choose a SAM2 model, and configure the overlap threshold.</p>
+    </div>
+  </div>
+  <div class="wf-step">
+    <div class="wf-num">2</div>
+    <div class="wf-content">
+      <h3>Select a reference frame</h3>
+      <p>Navigate to the best frame for annotation — or use the "Suggest Optimal Frames" tool to find high-quality candidates automatically.</p>
+    </div>
+  </div>
+  <div class="wf-step">
+    <div class="wf-num">3</div>
+    <div class="wf-content">
+      <h3>Add the target marker (guided)</h3>
+      <p>Draw a bounding box around your gaze ring or target object, then refine with positive/negative click points. The tool walks you through this step-by-step.</p>
+    </div>
+  </div>
+  <div class="wf-step">
+    <div class="wf-num">4</div>
+    <div class="wf-content">
+      <h3>Add objects to track</h3>
+      <p>After the target is set, add the other objects (toys, faces, etc.) by name and annotate each with click points.</p>
+    </div>
+  </div>
+  <div class="wf-step">
+    <div class="wf-num">5</div>
+    <div class="wf-content">
+      <h3>Process</h3>
+      <p>Click "Process". SAM2 propagates masks through the entire video and detects overlap events.</p>
+    </div>
+  </div>
+  <div class="wf-step">
+    <div class="wf-num">6</div>
+    <div class="wf-content">
+      <h3>Download results</h3>
+      <p>Get the annotated video, CSV, and ELAN file as a ZIP archive from the Results page.</p>
+    </div>
+  </div>
+</div>
+
+<!-- ══════════════════════════════════════════════ -->
+<h2>Step-by-Step Instructions</h2>
+
+<h3>1. Upload Your Video</h3>
+
+<p>On the <strong>Config</strong> page, click the upload area and select your video file. Supported formats: <code>.mp4</code>, <code>.mov</code>, <code>.avi</code>, and most other common video formats.</p>
+
+<p>Optionally set <strong>trim start</strong> and <strong>trim end</strong> times (in seconds) to process only a portion of the video. This can significantly reduce processing time.</p>
+
+<p>Set the <strong>frame extraction rate</strong> (frames per second). A rate of 5–10 fps is typical. Higher values give finer time resolution but take longer to annotate and process.</p>
+
+<h3>2. Configure the Model and Detection Settings</h3>
+
+<p>Choose a <strong>SAM2 model</strong> based on your speed/accuracy needs:</p>
+
+<div class="model-grid">
+  <div class="model-card">
+    <div class="mname">Tiny</div>
+    <div class="msize">~40 MB</div>
+    <div class="mbar"><div class="mbar-fill" style="width:25%"></div></div>
+    <div class="mlabel">Fastest — good for testing</div>
+  </div>
+  <div class="model-card">
+    <div class="mname">Small</div>
+    <div class="msize">~185 MB</div>
+    <div class="mbar"><div class="mbar-fill" style="width:50%"></div></div>
+    <div class="mlabel">Good balance</div>
+  </div>
+  <div class="model-card">
+    <div class="mname">Base+</div>
+    <div class="msize">~325 MB</div>
+    <div class="mbar"><div class="mbar-fill" style="width:75%"></div></div>
+    <div class="mlabel">More accurate</div>
+  </div>
+  <div class="model-card">
+    <div class="mname">Large</div>
+    <div class="msize">~900 MB</div>
+    <div class="mbar"><div class="mbar-fill" style="width:100%"></div></div>
+    <div class="mlabel">Most accurate — GPU recommended</div>
+  </div>
+</div>
+
+<p><strong>Overlap threshold</strong> — the minimum percentage of pixel overlap between the target mask and another object's mask required to register a "looking at" event. The default is <strong>10%</strong>. Lower values detect more (including brief) events; higher values require more sustained contact.</p>
+
+<p><strong>Bidirectional propagation</strong> — when enabled (the default), SAM2 tracks objects both forward and backward from the reference frame. More accurate but roughly doubles processing time. Disable if your reference frame is the very first frame of the video.</p>
+
+<h3>3. Select a Reference Frame</h3>
+
+<p>On the <strong>Annotation</strong> page, the first panel you see is <strong>Step 1: Select Reference Frame</strong>. Navigate through the video using the Prev/Next buttons or the frame slider until you find a good frame.</p>
+
+<div class="callout tip">
+  <span class="callout-icon">&#9733;</span>
+  <div class="callout-body"><strong>Use frame suggestions:</strong> Click <em>"Suggest Optimal Frames"</em> to have the tool automatically rank frames by sharpness and object detectability. A panel opens showing the top candidates — you can select multiple and visit them in sequence.</div>
+</div>
+
+<div class="callout tip">
+  <span class="callout-icon">&#9733;</span>
+  <div class="callout-body"><strong>Annotating across multiple frames:</strong> When you select several suggested frames, a blue <em>"Next Selected Frame"</em> banner appears in the right panel. Use it to jump through each frame in sequence after annotating the previous one — useful for annotating objects that appear at different times.</div>
+</div>
+
+<p>Once you have navigated to your chosen frame, click <strong>"Use This Frame"</strong>.</p>
+
+<h3>4. Add the Target Marker (Guided Flow)</h3>
+
+<p>After selecting a frame, the panel asks: <strong>"What would you like to do?"</strong></p>
+
+<ul>
+  <li><strong>Add Target Marker</strong> — follow the guided two-step flow below to annotate your gaze ring or other target object.</li>
+  <li><strong>Skip — Add Objects Only</strong> — jump straight to the objects panel if you do not have a target marker (no ELAN or overlap output will be generated).</li>
+  <li><strong>Back — Change Frame</strong> — return to the frame selection step.</li>
+</ul>
+
+<h4>Step 1: Draw a Bounding Box</h4>
+
+<p>The panel shows: <em>"Click and drag on the image to draw a box around the target marker."</em></p>
+
+<p>Click and hold on one corner of the target object, drag to the opposite corner, and release. A cyan bounding box appears around the area. If you drew it in the wrong place, click <strong>"Back — Choose Again"</strong> to cancel and return to the prompt.</p>
+
+<h4>Step 2: Refine with Points</h4>
+
+<p>After the bounding box is drawn, the panel automatically advances to <strong>Step 2: Add Points</strong>. The AI uses the box as an initial mask boundary; you can now refine it:</p>
+
+<ul>
+  <li>Click inside the target to place <strong>positive points</strong> (mark regions that belong to the object).</li>
+  <li>Switch to <strong>Negative</strong> mode and click on regions that were incorrectly included (e.g. the hand of an experimenter near the gaze ring).</li>
+  <li>Use <strong>Test Mask</strong> to preview the AI's mask in a pop-up overlay.</li>
+  <li>Press <strong>Undo</strong> to remove the last point. Press Undo again when no points remain to go back to the bounding box step.</li>
+</ul>
+
+<p>When the mask looks correct, click <strong>"Done — Save Target"</strong>.</p>
+
+<div class="figure">
+  <div class="figure-row">
+    <img src="screenshots/06_annotation_bbox_step.png" alt="Step 1: Draw Bounding Box panel">
+    <img src="screenshots/07_annotation_points_step.png" alt="Step 2: Add Points panel with bounding box drawn">
+  </div>
+  <figcaption>Figure 2 — Step 1: drag to draw a bounding box around the target (left). Step 2: click inside to add positive points that refine the mask boundary (right).</figcaption>
+</div>
+
+<h3>5. Add Objects to Track</h3>
+
+<p>After saving the target, the full <strong>Objects panel</strong> opens. For each additional object you want to track:</p>
+
+<ol>
+  <li>Type a name in the <em>"Object name"</em> field (e.g. <code>cup</code>, <code>toy_car</code>, <code>face</code>).</li>
+  <li>Optionally tick <em>"Mark as target"</em> if this object should also act as a gaze source (rarely needed — you normally only have one target).</li>
+  <li>Click <strong>Add</strong>. The object appears in the list and becomes the active selection.</li>
+  <li>Click directly on the object in the frame to place <strong>positive points</strong>. Switch to <strong>Negative</strong> mode to exclude regions.</li>
+  <li>Click <strong>Save</strong> (or press <kbd>Enter</kbd>) to confirm the annotation.</li>
+  <li>Repeat for each additional object.</li>
+</ol>
+
+<div class="callout warn">
+  <span class="callout-icon">&#9888;</span>
+  <div class="callout-body">If no object with "target" in its name is annotated, the tool will track objects and export the annotated video and CSV, but will <strong>not</strong> generate an ELAN file.</div>
+</div>
+
+<h4>Keyboard shortcuts</h4>
+
+<table>
+  <tr><th>Key</th><th>Action</th></tr>
+  <tr><td><kbd>C</kbd></td><td>Jump focus to the object name field</td></tr>
+  <tr><td><kbd>Enter</kbd></td><td>Save the current object's points</td></tr>
+  <tr><td><kbd>T</kbd></td><td>Test mask (preview the AI mask)</td></tr>
+  <tr><td><kbd>1</kbd></td><td>Switch to Positive point mode</td></tr>
+  <tr><td><kbd>2</kbd></td><td>Switch to Negative point mode</td></tr>
+  <tr><td><kbd>Ctrl</kbd>+<kbd>Z</kbd></td><td>Undo last annotation point</td></tr>
+  <tr><td><kbd>←</kbd> / <kbd>→</kbd></td><td>Navigate to previous / next frame</td></tr>
+</table>
+
+<h3>6. Start Processing</h3>
+
+<p>Once at least one object is saved, the <strong>Process</strong> button in the top-right header becomes active. Click it. SAM2 propagates masks through every frame and detects overlap events. On a modern GPU, a 10-second video at 5 fps takes 10–30 seconds. On CPU only, this may take several minutes.</p>
+
+<p>Progress stages shown on screen:</p>
+<ul>
+  <li><em>Processing</em> — SAM2 propagating masks frame by frame</li>
+  <li><em>Saving</em> — rendering the annotated video and writing output files</li>
+  <li><em>Completed</em> — all outputs are ready for download</li>
+</ul>
+
+<div class="callout warn">
+  <span class="callout-icon">&#9888;</span>
+  <div class="callout-body">Do not close the browser tab during processing. The backend continues even if the tab is hidden, but keeping it open ensures the result files are available for download.</div>
+</div>
+
+<h3>7. Download Results</h3>
+
+<p>The Results page shows a summary of detected overlap events and a download button for all output files as a single ZIP archive. The CSV export is generated asynchronously and may appear a few seconds after the other files.</p>
+
+<!-- ══════════════════════════════════════════════ -->
+<h2>Understanding the Outputs</h2>
+
+<div class="output-grid">
+  <div class="output-card">
+    <div class="icon">&#127909;</div>
+    <div class="name">Annotated Video</div>
+    <div class="ext">.mp4</div>
+    <p>The original video with colored mask overlays for each object. Overlap events are shown as on-screen labels ("Looking at: toy").</p>
+  </div>
+  <div class="output-card">
+    <div class="icon">&#128202;</div>
+    <div class="name">CSV Export</div>
+    <div class="ext">.csv</div>
+    <p>One row per frame per object. Contains bounding box coordinates, centroid position, mask area, and overlap status for every tracked object.</p>
+  </div>
+  <div class="output-card">
+    <div class="icon">&#128203;</div>
+    <div class="name">ELAN File</div>
+    <div class="ext">.eaf</div>
+    <p>Time-aligned annotation file for ELAN software. Contains "Looking at: [object]" events on separate tiers for each tracked object.</p>
+  </div>
+</div>
+
+<h3>The Annotated Video</h3>
+
+<div class="figure">
+  <img src="screenshots/09_results.png" alt="Results page showing output files ready for download">
+  <figcaption>Figure 3 — The Results page after processing completes: summary stats and a ZIP download button for all output files.</figcaption>
+</div>
+
+<p>Each tracked object is shown with a semi-transparent colored mask. When the target overlaps an object, an on-screen label appears indicating the event. This is useful for a quick visual sanity check of the detection results.</p>
+
+<h3>The CSV File</h3>
+
+<p>The CSV has one row per frame per object. Key columns:</p>
+
+<table>
+  <tr><th>Column</th><th>Description</th></tr>
+  <tr><td><code>frame_idx</code></td><td>Frame number (0-based)</td></tr>
+  <tr><td><code>obj_name</code></td><td>Object name as you entered it</td></tr>
+  <tr><td><code>bbox_x, bbox_y, bbox_w, bbox_h</code></td><td>Bounding box (pixels, relative to frame)</td></tr>
+  <tr><td><code>centroid_x, centroid_y</code></td><td>Mask centroid position</td></tr>
+  <tr><td><code>mask_area</code></td><td>Number of pixels in the mask</td></tr>
+  <tr><td><code>overlap_pct</code></td><td>Percentage overlap with the target (0–100)</td></tr>
+  <tr><td><code>is_looking_at</code></td><td>1 if overlap exceeds the threshold, 0 otherwise</td></tr>
+</table>
+
+<p>You can open the CSV in Excel, R, or Python for further analysis. The frame index can be converted to timestamps by dividing by the extraction frame rate.</p>
+
+<h3>The ELAN File</h3>
+
+<div class="callout info">
+  <span class="callout-icon">&#8505;</span>
+  <div class="callout-body">Open the downloaded <code>.eaf</code> file directly in <a href="https://archive.mpi.nl/tla/elan">ELAN</a>. Each tracked object appears as a separate annotation tier; overlap events are labelled <em>"Looking at: [object]"</em> with millisecond-precision timestamps aligned to the original video.</div>
+</div>
+
+<p>The ELAN file (<code>.eaf</code>) can be opened directly in <a href="https://archive.mpi.nl/tla/elan">ELAN</a> (free software from the Max Planck Institute). It contains one annotation tier per tracked object, with annotations spanning the time ranges where the target was overlapping that object.</p>
+
+<p>Annotations are labelled <em>"Looking at: [object name]"</em>. The timing is in milliseconds and is aligned to the original video timeline, accounting for any trim offset you applied.</p>
+
+<div class="callout info">
+  <span class="callout-icon">&#8505;</span>
+  <div class="callout-body">The ELAN file is only generated when at least one target object is annotated and at least one overlap event is detected. If no events were detected, check that your overlap threshold is not set too high, or that the target and objects were actually close in the video.</div>
+</div>
+
+<!-- ══════════════════════════════════════════════ -->
+<h2>Tips for Better Results</h2>
+
+<h3>Choosing the right reference frame</h3>
+<ul>
+  <li>Use a frame where all objects you want to track are clearly visible and well-lit.</li>
+  <li>Avoid frames with heavy motion blur.</li>
+  <li>If the target object (e.g. gaze ring) is only visible for part of the video, choose a frame near the middle of that period and enable bidirectional propagation.</li>
+</ul>
+
+<h3>Getting clean masks</h3>
+<ul>
+  <li>For the target marker, always use the bounding box first — the guided flow does this automatically. The box gives SAM2 a tight region to work within before you place points.</li>
+  <li>For other objects, start with one positive point at the center of the object and preview with "Test Mask" before saving.</li>
+  <li>If the mask bleeds onto neighboring regions, add negative points on those regions.</li>
+  <li>A mask that covers ~80–90% of the object is usually sufficient — perfect coverage is not required.</li>
+</ul>
+
+<h3>Adjusting the overlap threshold</h3>
+<ul>
+  <li><strong>10% (default)</strong> — suitable for most scenarios where the target is small relative to the objects it overlaps.</li>
+  <li><strong>Lower (e.g. 5%)</strong> — detect more events including brief or partial overlaps. More false positives are possible.</li>
+  <li><strong>Higher (e.g. 25–50%)</strong> — only register events where the target substantially overlaps the object. Reduces false positives but may miss brief events.</li>
+</ul>
+
+<h3>Managing long videos</h3>
+<ul>
+  <li>Use the trim start/end fields to process only the relevant portion of the video.</li>
+  <li>Use the Tiny or Small SAM2 model for a first pass, then re-run with a larger model if accuracy is insufficient.</li>
+  <li>On CPU-only systems, a 1-minute video at 5 fps (300 frames) may take 5–15 minutes to process.</li>
+</ul>
+
+<!-- ══════════════════════════════════════════════ -->
+<h2>Frequently Asked Questions</h2>
+
+<details>
+  <summary>Can I annotate more than one "target" object?</summary>
+  <div>
+    <p>Only one target object is supported per session. If you name multiple objects with "target" in the name, only the first one will be used as the primary overlap source. If you need to track multiple gaze sources, process the video multiple times with different target annotations.</p>
+  </div>
+</details>
+
+<details>
+  <summary>What if the AI tracks the wrong object after a few frames?</summary>
+  <div>
+    <p>SAM2 propagation can drift when objects are occluded, move out of frame, or look very similar to the background. To improve tracking:</p>
+    <ul>
+      <li>Add negative points to exclude confusing background regions at annotation time.</li>
+      <li>Use a larger SAM2 model (Base+ or Large).</li>
+      <li>Enable bidirectional propagation — it can correct drift on both sides of the reference frame.</li>
+      <li>Choose a reference frame closer to the part of the video where tracking is most critical.</li>
+    </ul>
+  </div>
+</details>
+
+<details>
+  <summary>The ELAN file is missing — why?</summary>
+  <div>
+    <p>The ELAN file is only created when:</p>
+    <ol>
+      <li>At least one object with "target" in its name was annotated.</li>
+      <li>At least one overlap event was detected during processing.</li>
+    </ol>
+    <p>If the file is missing, check (1) that your target object name contains the word "target" and (2) that the overlap threshold is not set higher than the actual overlap in the video.</p>
+  </div>
+</details>
+
+<details>
+  <summary>How do I import the ELAN file into ELAN software?</summary>
+  <div>
+    <p>Open ELAN (free download at <a href="https://archive.mpi.nl/tla/elan">archive.mpi.nl/tla/elan</a>). Go to <em>File → Open</em> and select the <code>.eaf</code> file. The software will prompt you to locate the associated video file — browse to the original video file. The annotations will then appear on the timeline aligned with the video.</p>
+  </div>
+</details>
+
+<details>
+  <summary>Can I re-annotate and reprocess the same video?</summary>
+  <div>
+    <p>Yes. Start a new session for each annotation pass. Sessions are independent and stored separately on your local machine. Previous sessions do not affect new ones.</p>
+  </div>
+</details>
+
+<details>
+  <summary>The CSV export takes a long time to appear in the results</summary>
+  <div>
+    <p>The CSV and masks JSON are generated asynchronously after the main processing pipeline completes. The Results page may show the annotated video and ELAN file before the CSV is ready. Wait a few seconds and refresh the page — the CSV download link will appear once the export is complete.</p>
+  </div>
+</details>
+
+<!-- ══════════════════════════════════════════════ -->
+<h2>Data and Privacy</h2>
+
+<p>EnvisionObjectAnnotator runs entirely <strong>on your local machine</strong>. No video data, annotations, or results are sent to any external server. All processing is done by the backend running on your computer (or HPC cluster). This makes the tool suitable for working with sensitive or proprietary video data, including infant recordings subject to data privacy regulations.</p>
+
+<!-- ══════════════════════════════════════════════ -->
+<h2>Citation</h2>
+
+<p>If you use EnvisionObjectAnnotator in your research, please cite the EnvisionBox project. A full reference will be added here when the corresponding publication is available.</p>
+
+<p>Related resources:</p>
+<ul>
+  <li><a href="https://www.envisionbox.org">EnvisionBox Project</a></li>
+  <li><a href="https://github.com/levankhaduri/EnvisionObjectAnnotator">GitHub repository</a></li>
+  <li><a href="https://github.com/facebookresearch/sam2">Meta AI SAM2</a></li>
+  <li><a href="https://archive.mpi.nl/tla/elan">ELAN annotation software (MPI)</a></li>
+</ul>
+
+<footer>
+  <p>EnvisionObjectAnnotator &bull; EnvisionBox Project &bull; <a href="https://www.envisionbox.org">envisionbox.org</a></p>
+  <p>For issues and questions: <a href="https://github.com/levankhaduri/EnvisionObjectAnnotator/issues">github.com/levankhaduri/EnvisionObjectAnnotator/issues</a></p>
+</footer>
+
+</body>
+</html>
