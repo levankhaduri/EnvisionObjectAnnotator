@@ -2282,6 +2282,8 @@ class UltraOptimizedProcessor:
                 start_time = start_frame_corrected / fps
                 end_time = end_frame_corrected / fps
 
+                if int(end_time * 1000) <= int(start_time * 1000):
+                    continue
                 all_time_points.add(start_time)
                 all_time_points.add(end_time)
 
@@ -2310,6 +2312,9 @@ class UltraOptimizedProcessor:
                 end_time = end_frame_corrected / fps
                 start_ms = int(start_time * 1000)
                 end_ms = int(end_time * 1000)
+
+                if end_ms <= start_ms:
+                    continue
 
                 start_slot = time_slot_refs[start_ms]
                 end_slot = time_slot_refs[end_ms]

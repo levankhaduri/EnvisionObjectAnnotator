@@ -517,6 +517,13 @@ class HeadlessProcessor:
     def cleanup_mask_store(self):
         return self._processor.cleanup_mask_store()
 
+    def get_event_count(self):
+        try:
+            summary = self._processor.overlap_tracker.get_overlap_summary()
+            return sum(len(data["events"]) for data in summary.values())
+        except Exception:
+            return 0
+
 
 def _set_status(session_id, status, progress, message):
     state.set_processing(
@@ -1105,6 +1112,7 @@ def run_processing(session_id):
             "device": str(device),
             "frames_total": frame_count,
             "objects_total": len(object_names),
+            "events_total": wrapped.get_event_count(),
             "processing_fps": frame_count / processing_seconds,
             "auto_tune": auto_tune_info,
             "timings_s": {

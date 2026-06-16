@@ -8,6 +8,7 @@ import {
   fetchFrameAnnotations,
   suggestFrames,
   deleteAnnotationObject,
+  fetchSystemStats,
 } from "../api.js";
 import {
   Button,
@@ -87,6 +88,7 @@ export default function AnnotationPage() {
   const [objectBboxes, setObjectBboxes] = useState({}); // {objectName: {x1,y1,x2,y2,fx1,fy1,fx2,fy2}}
   const [targetFlowStep, setTargetFlowStep] = useState("frame"); // "frame" | "prompt" | "bbox" | "points" | null
   const [suggestionQueue, setSuggestionQueue] = useState([]); // remaining selected frames to visit
+  const [ramWarning, setRamWarning] = useState(null); // "low" | "critical" | null
   const annotationsCache = useRef(new Map());
   const maskCache = useRef(new Map());
   const imgRef = useRef(null);
@@ -115,6 +117,18 @@ export default function AnnotationPage() {
     } else {
       setLoading(false);
     }
+  }, []);
+
+  // Check available RAM once on mount
+  useEffect(() => {
+    fetchSystemStats()
+      .then((stats) => {
+        const avail = stats?.ram?.available_gb;
+        if (avail == null) return;
+        if (avail < 4) setRamWarning("critical");
+        else if (avail < 10) setRamWarning("low");
+      })
+      .catch(() => {}); // non-fatal
   }, []);
 
   // Keyboard shortcuts
@@ -801,6 +815,19 @@ export default function AnnotationPage() {
         </div>
       </header>
 
+      {ramWarning && (
+        <InlineNotification
+          kind={ramWarning === "critical" ? "error" : "warning"}
+          title={ramWarning === "critical" ? "Very low RAM" : "Low RAM available"}
+          subtitle={ramWarning === "critical"
+            ? "Less than 4 GB free — processing is likely to fail. Close other applications or use a shorter video."
+            : "Less than 10 GB free — long videos may run out of memory. Consider trimming your video or reducing frame rate."}
+          lowContrast
+          hideCloseButton
+          style={{ marginBottom: 0 }}
+        />
+      )}
+
       <main className="app-content">
         <div className="page-container">
           {/* Progress indicator */}
@@ -829,6 +856,7 @@ export default function AnnotationPage() {
                   onMouseDown={handleImageMouseDown}
                   onMouseMove={handleImageMouseMove}
                   onMouseUp={handleImageMouseUp}
+                  onContextMenu={(e) => e.preventDefault()}
                 >
                   {loading ? (
                     <div style={{ padding: "4rem", textAlign: "center" }}>
@@ -849,20 +877,20 @@ export default function AnnotationPage() {
                         <div
                           style={{
                             position: "absolute",
-                            inset: 0,
-                            backgroundColor: "rgba(0,0,0,0.7)",
+                            bottom: 0,
+                            left: 0,
+                            right: 0,
+                            backgroundColor: "rgba(0,0,0,0.65)",
+                            color: "#fff",
+                            padding: "0.5rem 0.75rem",
+                            fontSize: "0.8rem",
                             display: "flex",
                             alignItems: "center",
-                            justifyContent: "center",
+                            gap: "0.5rem",
                           }}
                         >
-                          <Tile style={{ maxWidth: "280px", display: "flex", flexDirection: "column", alignItems: "center", textAlign: "center" }}>
-                            <Cursor_1 size={32} style={{ marginBottom: "0.5rem" }} />
-                            <p style={{ fontWeight: 600, marginBottom: "0.5rem" }}>Create an object first</p>
-                            <p style={{ fontSize: "0.875rem", color: "#525252" }}>
-                              Type a name in the Objects panel and click "Add Object"
-                            </p>
-                          </Tile>
+                          <Cursor_1 size={14} />
+                          Type an object name in the panel and click <strong style={{ marginLeft: "0.25rem" }}>Add</strong>
                         </div>
                       )}
                     </>

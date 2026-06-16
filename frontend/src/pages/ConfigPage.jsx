@@ -750,7 +750,7 @@ export default function ConfigPage() {
 
             {/* Right column - Settings */}
             <Column lg={4} md={8} sm={4}>
-              <Accordion>
+              <Accordion style={{ isolation: "isolate" }}>
                 {/* Model & Detection */}
                 <AccordionItem title={<span style={{ display: "flex", alignItems: "center", gap: "0.5rem" }}><MachineLearning size={16} /> Model & Detection</span>}>
                   <div style={{ display: "flex", flexDirection: "column", gap: "1rem" }}>

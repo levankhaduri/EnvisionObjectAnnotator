@@ -139,7 +139,7 @@ class ResourceProfiler:
         cpu = [s.get("cpu_percent", 0) for s in self.samples]
         ram_pct = [s.get("ram_percent", 0) for s in self.samples]
         ram_used = [s.get("ram_used_gb", 0) for s in self.samples]
-        gpu_pct = [s.get("gpu_percent", 0) for s in self.samples]
+        gpu_reserved = [s.get("gpu_reserved_gb", 0) for s in self.samples]
         gpu_util = [s.get("gpu_utilization", 0) for s in self.samples]
         gpu_alloc = [s.get("gpu_allocated_gb", 0) for s in self.samples]
 
@@ -159,7 +159,7 @@ class ResourceProfiler:
         cpu_js = json.dumps(cpu)
         ram_pct_js = json.dumps(ram_pct)
         ram_used_js = json.dumps(ram_used)
-        gpu_pct_js = json.dumps(gpu_pct)
+        gpu_reserved_js = json.dumps(gpu_reserved)
         gpu_util_js = json.dumps(gpu_util)
         gpu_alloc_js = json.dumps(gpu_alloc)
 
@@ -306,14 +306,14 @@ function drawChart(canvasId, labels, datasets, yMax) {{
 const timestamps = {ts_js};
 drawChart('cpuChart', timestamps, [{{label: 'CPU %', data: {cpu_js}}}], 100);
 drawChart('ramChart', timestamps, [{{label: 'Used GB', data: {ram_used_js}}}], {ram_total or 32});
-{"drawChart('gpuMemChart', timestamps, [{label: 'Allocated', data: " + gpu_alloc_js + "}, {label: 'Reserved', data: " + gpu_pct_js.replace('[', '[').replace(']', ']') + "}], " + str(gpu_total or 16) + ");" if has_gpu else ""}
+{"drawChart('gpuMemChart', timestamps, [{label: 'Allocated', data: " + gpu_alloc_js + "}, {label: 'Reserved', data: " + gpu_reserved_js + "}], " + str(gpu_total or 16) + ");" if has_gpu else ""}
 {"drawChart('gpuUtilChart', timestamps, [{label: 'GPU Util %', data: " + gpu_util_js + "}], 100);" if has_gpu_util else ""}
 
 // Redraw on resize
 window.addEventListener('resize', () => {{
   drawChart('cpuChart', timestamps, [{{label: 'CPU %', data: {cpu_js}}}], 100);
   drawChart('ramChart', timestamps, [{{label: 'Used GB', data: {ram_used_js}}}], {ram_total or 32});
-  {"drawChart('gpuMemChart', timestamps, [{label: 'Allocated', data: " + gpu_alloc_js + "}, {label: 'Reserved', data: " + gpu_pct_js + "}], " + str(gpu_total or 16) + ");" if has_gpu else ""}
+  {"drawChart('gpuMemChart', timestamps, [{label: 'Allocated', data: " + gpu_alloc_js + "}, {label: 'Reserved', data: " + gpu_reserved_js + "}], " + str(gpu_total or 16) + ");" if has_gpu else ""}
   {"drawChart('gpuUtilChart', timestamps, [{label: 'GPU Util %', data: " + gpu_util_js + "}], 100);" if has_gpu_util else ""}
 }});
 </script>

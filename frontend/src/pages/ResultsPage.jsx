@@ -442,6 +442,10 @@ export default function ResultsPage() {
                     <div style={{ fontSize: "1.25rem", fontWeight: 600 }}>{profiling?.objects_total ?? "---"}</div>
                   </div>
                   <div style={{ padding: "0.75rem", backgroundColor: "#f4f4f4", borderRadius: "4px", textAlign: "center" }}>
+                    <div style={{ fontSize: "0.75rem", color: "#6f6f6f" }}>Overlap Events</div>
+                    <div style={{ fontSize: "1.25rem", fontWeight: 600 }}>{profiling?.events_total ?? "---"}</div>
+                  </div>
+                  <div style={{ padding: "0.75rem", backgroundColor: "#f4f4f4", borderRadius: "4px", textAlign: "center" }}>
                     <div style={{ fontSize: "0.75rem", color: "#6f6f6f" }}>Frames</div>
                     <div style={{ fontSize: "1.25rem", fontWeight: 600 }}>{profiling?.frames_total ?? "---"}</div>
                   </div>
