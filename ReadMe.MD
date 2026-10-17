@@ -18,7 +18,7 @@
 </p>
 
 <p align="center">
-  <img src="extra/Video_Process.gif">
+  <img src="extra/Walkthrough.gif">
 </p>
 
 This repository provides a user-friendly application built on [Meta AI’s SAM2](https://github.com/facebookresearch/sam2) model for **object tracking and overlap (“looking at”) detection** in videos.  
