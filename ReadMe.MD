@@ -192,6 +192,30 @@ npm run dev
 
 ---
 
+## Walkthrough
+
+<p align="center">
+  <b>1. Home page</b><br>
+  <img src="extra/HomePage.gif">
+</p>
+
+<p align="center">
+  <b>2. Marking objects</b><br>
+  <img src="extra/Marking.gif">
+</p>
+
+<p align="center">
+  <b>3. Processing</b><br>
+  <img src="extra/Processing.gif">
+</p>
+
+<p align="center">
+  <b>4. Results</b><br>
+  <img src="extra/Result.gif">
+</p>
+
+---
+
 ##  What it outputs:
 
 - **Annotated video**: shows objects with color-coded masks and on-screen event labels  
