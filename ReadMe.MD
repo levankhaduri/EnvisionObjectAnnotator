@@ -18,7 +18,7 @@
 </p>
 
 <p align="center">
-  <img src="extra/Video_Process.gif">
+  <img src="extra/Walkthrough.gif">
 </p>
 
 This repository provides a user-friendly application built on [Meta AI’s SAM2](https://github.com/facebookresearch/sam2) model for **object tracking and overlap (“looking at”) detection** in videos.  
@@ -189,14 +189,6 @@ npm run dev
 4. **Set detection threshold** → default is 10% overlap.  
 5. **Choose model** → select SAM2.1 or EdgeTAM on the Config page.  
 6. **Process video** → masks are propagated, overlaps are detected, and outputs are generated.
-
----
-
-## Walkthrough
-
-<p align="center">
-  <img src="extra/Walkthrough.gif">
-</p>
 
 ---
 
