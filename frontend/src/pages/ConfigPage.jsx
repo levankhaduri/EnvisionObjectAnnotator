@@ -96,6 +96,7 @@ export default function ConfigPage() {
   const [frameStride, setFrameStride] = useState(1);
   const [frameInterpolation, setFrameInterpolation] = useState("nearest");
   const [enableBidirectional, setEnableBidirectional] = useState(true);
+  const [overlapMode, setOverlapMode] = useState("both");
   const [roiEnabled, setRoiEnabled] = useState(false);
   const [enhanceTarget, setEnhanceTarget] = useState(false);
   const [roiMargin, setRoiMargin] = useState(0.15);
@@ -345,6 +346,7 @@ export default function ConfigPage() {
         process_end_frame: toInt(processEndFrame),
         enable_bidirectional: enableBidirectional,
         enhance_target: enhanceTarget,
+        overlap_mode: overlapMode,
       });
       setStatus("Configuration saved!");
       setStatusType("success");
@@ -750,7 +752,7 @@ export default function ConfigPage() {
 
             {/* Right column - Settings */}
             <Column lg={4} md={8} sm={4}>
-              <Accordion>
+              <Accordion style={{ isolation: "isolate" }}>
                 {/* Model & Detection */}
                 <AccordionItem title={<span style={{ display: "flex", alignItems: "center", gap: "0.5rem" }}><MachineLearning size={16} /> Model & Detection</span>}>
                   <div style={{ display: "flex", flexDirection: "column", gap: "1rem" }}>
@@ -795,6 +797,18 @@ export default function ConfigPage() {
                         hideTextInput
                       />
                     </div>
+
+                    <Select
+                      id="overlap-mode"
+                      labelText={<><DefinitionTooltip definition="Controls what counts as a gaze–object overlap event. 'Both' detects pixel intersection and spatial containment. 'Pixel only' requires actual mask overlap. 'Spatial only' uses centroid/contour containment even without pixel overlap." align="bottom">Overlap detection mode</DefinitionTooltip></>}
+                      value={overlapMode}
+                      onChange={(e) => setOverlapMode(e.target.value)}
+                      size="sm"
+                    >
+                      <SelectItem value="both" text="Both (pixel + spatial)" />
+                      <SelectItem value="pixel_only" text="Pixel overlap only" />
+                      <SelectItem value="spatial_only" text="Spatial containment only" />
+                    </Select>
 
                     <TextInput
                       id="batch-size"

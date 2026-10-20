@@ -7,6 +7,8 @@ EdgeTAM/
 backend/.venv/
 frontend/node_modules/
 backend/data/
+backend/sessions/
+eoa_testkit/
 __pycache__/
 *.pyc
 .vscode/

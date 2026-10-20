@@ -40,6 +40,7 @@ import {
   WarningAlt,
   Hourglass,
   Analytics,
+  ViewFilled,
 } from "@carbon/icons-react";
 
 export default function ResultsPage() {
@@ -438,8 +439,12 @@ export default function ResultsPage() {
                 </h3>
                 <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "0.75rem" }}>
                   <div style={{ padding: "0.75rem", backgroundColor: "#f4f4f4", borderRadius: "4px", textAlign: "center" }}>
-                    <div style={{ fontSize: "0.75rem", color: "#6f6f6f" }}>Events</div>
+                    <div style={{ fontSize: "0.75rem", color: "#6f6f6f" }}>Objects</div>
                     <div style={{ fontSize: "1.25rem", fontWeight: 600 }}>{profiling?.objects_total ?? "---"}</div>
+                  </div>
+                  <div style={{ padding: "0.75rem", backgroundColor: "#f4f4f4", borderRadius: "4px", textAlign: "center" }}>
+                    <div style={{ fontSize: "0.75rem", color: "#6f6f6f" }}>Overlap Events</div>
+                    <div style={{ fontSize: "1.25rem", fontWeight: 600 }}>{profiling?.events_total ?? "---"}</div>
                   </div>
                   <div style={{ padding: "0.75rem", backgroundColor: "#f4f4f4", borderRadius: "4px", textAlign: "center" }}>
                     <div style={{ fontSize: "0.75rem", color: "#6f6f6f" }}>Frames</div>
@@ -479,6 +484,29 @@ export default function ResultsPage() {
                       </div>
                     </div>
                   </AccordionItem>
+
+                  {profiling?.object_frame_stats && Object.keys(profiling.object_frame_stats).length > 0 && (
+                    <AccordionItem title={<span style={{ display: "flex", alignItems: "center", gap: "0.5rem" }}><ViewFilled size={16} /> Object Tracking</span>}>
+                      <StructuredListWrapper>
+                        <StructuredListHead>
+                          <StructuredListRow head>
+                            <StructuredListCell head>Object</StructuredListCell>
+                            <StructuredListCell head>Frames</StructuredListCell>
+                            <StructuredListCell head>Range</StructuredListCell>
+                          </StructuredListRow>
+                        </StructuredListHead>
+                        <StructuredListBody>
+                          {Object.entries(profiling.object_frame_stats).map(([name, s]) => (
+                            <StructuredListRow key={name}>
+                              <StructuredListCell>{name}</StructuredListCell>
+                              <StructuredListCell>{s.frames}</StructuredListCell>
+                              <StructuredListCell>{s.first} → {s.last}</StructuredListCell>
+                            </StructuredListRow>
+                          ))}
+                        </StructuredListBody>
+                      </StructuredListWrapper>
+                    </AccordionItem>
+                  )}
 
                   <AccordionItem title={<span style={{ display: "flex", alignItems: "center", gap: "0.5rem" }}><Laptop size={16} /> Hardware</span>}>
                     <div style={{ display: "flex", flexDirection: "column", gap: "0.5rem", fontSize: "0.875rem" }}>
